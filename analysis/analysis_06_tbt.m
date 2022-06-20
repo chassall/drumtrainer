@@ -66,3 +66,29 @@ for p = 1:length(ps)
     end
     save(fullfile(tbtFolder,tbtFile),'erpRewp','erpArtifact','rERPRewp','rERPArtifact');
 end
+
+return;
+
+%% Load trial-by-trial data and format for further analysis in R
+
+% Participants to include
+ps = {'01','02','03','04','05','06','07','08','09','10','11','13','14','15','16','17','18','19','20','21'};
+
+% Set data folder - change as needed
+dataFolder = '/Users/chassall/OneDrive - Nexus365/Projects/2021_EEG_DrumTrainer_Hassall/data';
+
+% Loop through participants
+for p = 1:length(ps)
+
+    % Load trial-by-trial scores 
+    subName = ['sub-' ps{p}];
+    tbtFolder = [dataFolder '/derivatives/erptbt/' subName];
+    tbtFile = [subName '_task-drumtrainer_erptbt.mat'];
+    load(fullfile(tbtFolder,tbtFile),'erpRewp','erpArtifact','rERPRewp','rERPArtifact');
+
+    % Load behavioural data
+    rawFile = [subName '_task-drumtrainer_beh.tsv'];
+    beh = readtable(fullfile(dataFolder,subName,'beh',rawFile),'FileType','text');
+    
+    % * * * FORMAT DATA HERE * * *
+end
