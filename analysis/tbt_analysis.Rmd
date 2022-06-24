@@ -1,0 +1,237 @@
+---
+title: "tbt_analysis"
+author: "Ryan Yan"
+date: '2022-06-23'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(emmeans)
+library(lme4)
+library(sjPlot)
+library(brms)
+```
+
+```{r read files}
+file_tbt <- read.csv('/Users/rh/Documents/ds004152/R/tbt.csv')
+```
+
+```{r preprocessing,include=FALSE}
+#calculate local mean and rt adjustment
+file_tbt <- file_tbt %>%
+  group_by(participant_ID,blockLoop_thisRepN)%>% 
+  mutate(rt_adjustment = trialResp_rt -lag(trialResp_rt,1))%>%
+  mutate(rt_mean10 = rollmean(trialResp_rt, k = 10, fill = NA, align = "right"))%>%
+  mutate(rt_deviance_mean10 = trialResp_rt - rt_mean10)%>%
+  mutate(last_rt_deviance_mean10 = lag(rt_deviance_mean10,1))
+
+# add in text variables of tempo and outcome
+file_tbt$tempo <- NA
+file_tbt$tempo[which(file_tbt$blockType <= 4)] <- "fast"
+file_tbt$tempo[which(file_tbt$blockType >=9)] <- "slow"
+file_tbt$tempo[which(file_tbt$blockType >= 5 & file_tbt$blockType <= 8)] <- "medium"
+
+file_tbt$feedback <- NA
+file_tbt$feedback[which(file_tbt$outcome == 0)] <- "early"
+file_tbt$feedback[which(file_tbt$outcome == 1)] <- "on_time"
+file_tbt$feedback[which(file_tbt$outcome == 2)] <- "late"
+
+# add in hand and pattern
+pattern1_list <- c(1,2,5,6,9,10)
+pattern2_list <- c(3,4,7,8,11,12)
+right_list <- c(2,4,6,8,10,12)
+left_list <- c(1,3,5,7,9,11)
+
+file_tbt$pattern <- NA
+file_tbt$main_hand <- NA
+
+file_tbt$pattern[file_tbt$blockType %in% pattern1_list] <- "pattern1"
+file_tbt$pattern[file_tbt$blockType %in% pattern2_list] <- "pattern2"
+
+file_tbt$main_hand[file_tbt$blockType %in% right_list] <- "right"
+file_tbt$main_hand[file_tbt$blockType %in% left_list] <- "left"
+
+#add in chunking var
+file_tbt$chunk_location <- NA
+file_tbt <- file_tbt%>%
+  rowwise()%>%
+  mutate(chunk_location = ifelse(pattern == "pattern1",(trialLoop_thisRepN)%%4, #00,01,02,03
+         ifelse(pattern == "pattern2",10+(trialLoop_thisRepN)%%6,NA)))#10,11,12,13,14,15
+file_tbt$chunk_location <- as.factor(file_tbt$chunk_location)
+```
+
+```{r data cleaning, include=FALSE}
+#reaction time outliers
+tbt_outlier <-c(quantile(file_tbt$trialResp_rt[which(file_tbt$tempo == "fast")], c(0.01,0.99)),
+                       quantile(file_tbt$trialResp_rt[which(file_tbt$tempo == "medium")], c(0.01,0.99)),
+                       quantile(file_tbt$trialResp_rt[which(file_tbt$tempo == "slow")], c(0.01,0.99)))
+
+file_tbt$rt_include = 0
+file_tbt$rt_include[which(file_tbt$tempo == "fast" & file_tbt$trialResp_rt >= tbt_outlier[1] &
+                            file_tbt$trialResp_rt <= tbt_outlier[2] & file_tbt$trialResp_corr == 1)] <- 1
+file_tbt$rt_include[which(file_tbt$tempo == "medium" & file_tbt$trialResp_rt >= tbt_outlier[3] &
+                            file_tbt$trialResp_rt <= tbt_outlier[4] & file_tbt$trialResp_corr == 1)] <- 1
+file_tbt$rt_include[which(file_tbt$tempo == "slow" & file_tbt$trialResp_rt >= tbt_outlier[5] &
+                            file_tbt$trialResp_rt <= tbt_outlier[6] & file_tbt$trialResp_corr == 1)] <- 1
+
+#RT adjustment outliers
+rtAdj_outlier <-quantile(file_tbt$rt_adjustment, c(0.01,0.99),na.rm = TRUE)
+
+file_tbt$rtAdj_include = 0
+file_tbt$rtAdj_include[which(file_tbt$rt_adjustment >= rtAdj_outlier[1] & file_tbt$rt_adjustment <= rtAdj_outlier[2])] <- 1
+
+#RT deviation outliers
+rtDev_outlier <-quantile(file_tbt$last_rt_deviance_mean10, c(0.01,0.99),na.rm = TRUE)
+file_tbt$rtDev_include = 0
+file_tbt$rtDev_include[which(file_tbt$last_rt_deviance_mean10 >= rtDev_outlier[1] & file_tbt$last_rt_deviance_mean10 <= rtDev_outlier[2])] <- 1
+
+# ERP artifacts and outliers
+file_tbt$eeg_include = 0
+file_tbt <- file_tbt%>%filter(erpRewp != -99, rERPRewp!=-99)
+eeg_outlier <- c(quantile(file_tbt$erpRewp, c(0.01,0.99)),
+                 quantile(file_tbt$rERPRewp, c(0.01,0.99)))
+file_tbt$eeg_include[which(file_tbt$erpRewp >= eeg_outlier[1] &  file_tbt$erpRewp <=  eeg_outlier[2] & file_tbt$rERPRewp >= eeg_outlier[3] &  file_tbt$erpRewp <=  eeg_outlier[4])] <- 1
+
+# print(table(file_tbt$rt_include))
+# print(table(file_tbt$rtAdj_include))
+# print(table(file_tbt$eeg_include))
+```
+
+```{r data inclusion}
+print(paste0("Inclusion rate = ",round(length(which(file_tbt$rt_include == 1 & file_tbt$rtAdj_include==1 & file_tbt$eeg_include==1 & file_tbt$rtDev_include == 1))/nrow(file_tbt),2)))
+file_tbt <- file_tbt%>%filter(rt_include==1,rtAdj_include==1,eeg_include==1, rtDev_include == 1)
+```
+
+#Behavioural analysis
+
+```{r Reaction time}
+ggdensity(file_tbt, x = "trialResp_rt", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  geom_vline(xintercept  = 0.4)+
+  geom_vline(xintercept  = 0.6)+
+  geom_vline(xintercept  = 1.0)+
+  labs(x = 'Response Time',
+       y = 'Density')
+```
+
+*Conclusion: participants drum faster in the slow condition.*
+```{r RT adjustment}
+rtAdj_adjustment <- file_tbt%>%
+  group_by(participant_ID,feedback, tempo)%>%
+  summarise(rt_adjustment = mean(rt_adjustment,na.rm = TRUE))
+
+levels(rtAdj_adjustment$feedback) <- c("early","on_time","late")
+
+ggplot(rtAdj_adjustment, aes(x=feedback, y=rt_adjustment, color=feedback)) +
+  geom_hline(yintercept = 0, color = "grey")+
+  geom_violin()+ 
+  geom_boxplot(width = 0.2)+
+  labs(title= paste0("Mean amount of RT adjustment"))+
+  theme_test()+
+  facet_wrap(~tempo)+
+  scale_color_brewer(palette = "Set2")+
+  scale_x_discrete(limits = c("early","on_time","late"))
+
+aov2 <- aov(rt_adjustment ~ tempo * feedback + Error(participant_ID/(tempo * feedback)), file_tbt)
+summary(aov2)
+pairs(emmeans(aov2, ~tempo),adjust = 'bon')
+```
+
+```{r residual EEG}
+resEEG <- file_tbt%>%
+  mutate(correct = (outcome == 1))%>%
+  group_by(participant_ID,correct,tempo)%>%
+  summarise(rERPRewp = mean(rERPRewp,na.rm = TRUE))
+
+resEEG$correct <- as.factor(resEEG$correct)
+
+ggplot(resEEG, aes(x=correct, y=rERPRewp, color=correct)) +
+  geom_hline(yintercept = 0, color = "grey")+
+  geom_violin()+ 
+  geom_boxplot(width = 0.2)+
+  labs(title= paste0("Mean amount of RT adjustment."))+
+  theme_test()+
+  facet_wrap(~tempo)+
+  scale_color_brewer(palette = "Set2")
+```
+*conclusion: rERP is more positive for correct than incorrect response in the slow condition.*
+
+# trial-by-trial EEG predicting RT adjustments
+```{r include = FALSE}
+file_tbt_slow<- file_tbt%>%filter(tempo == "slow")
+file_tbt_slow$feedback <- factor(file_tbt_slow$feedback,levels = c("on_time","early","late"))
+
+lm_slow <- lmer(scale(rt_adjustment) ~ feedback * scale(rERPRewp)+chunk_location + feedback * scale(last_rt_deviance_mean10)+ (1|participant_ID), data= file_tbt_slow)
+summary(lm_slow)
+
+plot_model(lm_slow,type = "pred",terms = c("rERPRewp","feedback"))
+plot_model(lm_slow,type = "pred",terms = c("rERPRewp"))
+```
+
+```{r,echo = FALSE}
+file_tbt$feedback <- factor(file_tbt$feedback, levels = c("on_time","early","late"))
+file_tbt$tempo <- factor(file_tbt$tempo, levels = c("slow","fast","medium"))
+#baseline model
+lm0 <- lmer(scale(rt_adjustment) ~ tempo * feedback + chunk_location +  last_rt_deviance_mean10+ (1|participant_ID), data= file_tbt)
+
+lm1 <- lmer(scale(rt_adjustment) ~  scale(rERPRewp) + tempo * feedback + chunk_location + scale(last_rt_deviance_mean10) +  (1|participant_ID), data= file_tbt)
+
+lm2 <- lmer(scale(rt_adjustment) ~  tempo * feedback * scale(rERPRewp) + chunk_location + scale(last_rt_deviance_mean10) + (1|participant_ID), data= file_tbt)
+
+lm3 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (1|participant_ID), data= file_tbt)
+
+lm4 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (1|participant_ID), data= file_tbt)
+
+lm5 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (scale(rERPRewp)+ 1|participant_ID), data= file_tbt)
+
+lm6 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+```
+
+```{r}
+anova(lm0,lm1,lm2,lm3,lm4,lm5,lm6)
+summary(lm6)
+
+plot_model(lm6,type = "pred",terms = c("rERPRewp","feedback","tempo"))
+plot_model(lm6,type = "est",show.values = TRUE)
+plot_model(lm6,type = "pred",terms = c("last_rt_deviance_mean10"))
+plot_model(lm6,type = "pred",terms = c("chunk_location","tempo"))
+```
+
+```{r traditional ERP for comparison, include = FALSE}
+lm6b <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(erpRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10)  + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+
+summary(lm6b)
+```
+
+```{r relevelling to early feedback type, include=FALSE}
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "early")
+lm6c <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+
+summary(lm6c)
+```
+
+#Bayesian regression
+```{r, include = FALSE}
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "on_time")
+m_rERP <- brm(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10)+ main_hand + (tempo + 1|participant_ID),
+              data = file_tbt,
+              save_all_pars = TRUE,
+              seed = 123,
+              file = "/Users/rh/Documents/ds004152/R/m_rERP",
+              iter = 1000, warmup = 500, chains = 4, cores = 4,
+              control = list(adapt_delta = 0.99))
+```
+
+```{r}
+summary(m_rERP)$fixed
+plot_model(m_rERP,type = "pred", terms = c("rERPRewp","tempo","feedback"))
+```
+
+
+*Conclusion: modest evidence that more positive trial-by-trial rERP in the slow - on time condition predicts slowing of RT in the next trial. This also applies to traditional ERP.*

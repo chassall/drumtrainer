@@ -12,7 +12,7 @@ ps = {'01','02','03','04','05','06','07','08','09','10','11','13','14','15','16'
 if ispc
     dataFolder = 'E:\OneDrive - Nexus365\Projects\2021_EEG_DrumTrainer_Hassall\data';
 else
-    dataFolder = '/Users/chassall/OneDrive - Nexus365/Projects/2021_EEG_DrumTrainer_Hassall/data';
+    dataFolder = '/Users/rh/Documents/ds004152';
 end
 
 % Loop through participants
@@ -32,6 +32,7 @@ for p = 1:length(ps)
     baseline = [-40 0];
 
     % Make ERPs with the residual EEG
+%     [~,~,times,rerpdata, isRERPArtifact] = make_erp(rEEG,{'fastEarly','fastOnTime','fastLate','medEarly','medOnTime','medLate','slowEarly','slowOnTime','slowLate','redX'},interval,baseline);
     [~,~,times,rerpdata, isRERPArtifact] = make_erp(rEEG,{'fastEarly','fastOnTime','fastLate','medEarly','medOnTime','medLate','slowEarly','slowOnTime','slowLate','redX'},interval,baseline);
     iRewpWindow =  dsearchn(times',rewpWindow');
     rERPArtifact = isRERPArtifact(iElectrode,:)';
@@ -75,8 +76,8 @@ return;
 ps = {'01','02','03','04','05','06','07','08','09','10','11','13','14','15','16','17','18','19','20','21'};
 
 % Set data folder - change as needed
-dataFolder = '/Users/chassall/OneDrive - Nexus365/Projects/2021_EEG_DrumTrainer_Hassall/data';
-
+dataFolder = '/Users/rh/Documents/ds004152';
+tbt_file=[];
 % Loop through participants
 for p = 1:length(ps)
 
@@ -84,11 +85,31 @@ for p = 1:length(ps)
     subName = ['sub-' ps{p}];
     tbtFolder = [dataFolder '/derivatives/erptbt/' subName];
     tbtFile = [subName '_task-drumtrainer_erptbt.mat'];
-    load(fullfile(tbtFolder,tbtFile),'erpRewp','erpArtifact','rERPRewp','rERPArtifact');
+    thisData = load(fullfile(tbtFolder,tbtFile),'erpRewp','erpArtifact','rERPRewp','rERPArtifact');
 
     % Load behavioural data
     rawFile = [subName '_task-drumtrainer_beh.tsv'];
     beh = readtable(fullfile(dataFolder,subName,'beh',rawFile),'FileType','text');
     
     % * * * FORMAT DATA HERE * * *
+    
+    % assign impossible value to artifacts to exclude later
+    thisData.erpRewp(thisData.erpArtifact) = -99; 
+    thisData.rERPRewp(thisData.rERPArtifact) = -99;
+   
+    if size(beh,1) > 1728 %participant 1
+        thisData.erpRewp = thisData.erpRewp(1:1728);
+        thisData.rERPRewp = thisData.rERPRewp(1:1728);
+        beh = beh(1:1728,:);
+    end
+    
+    tbt_file = [tbt_file; repmat(str2double(ps{p}),1728,1),beh.blockLoop_thisRepN,beh.trialLoop_thisRepN,thisData.erpRewp,thisData.rERPRewp,beh.blockType,beh.outcome,...
+        beh.trialResp_corr,beh.trialResp_rt];
+    
+
 end
+
+tbt_file =  array2table(tbt_file);
+tbt_file.Properties.VariableNames = {'participant_ID','blockLoop_thisRepN','trialLoop_thisRepN','erpRewp','rERPRewp','blockType','outcome',...
+    'trialResp_corr','trialResp_rt'};
+writetable(tbt_file,[dataFolder '/R/tbt.csv']);
