@@ -14,14 +14,21 @@ library(emmeans)
 library(lme4)
 library(sjPlot)
 library(brms)
+library(grid)
+library(sjPlot)
+library(MuMIn)
+library(bayestestR)
 ```
 
 ```{r read files}
 file_tbt <- read.csv('/Users/rh/Documents/ds004152/R/tbt.csv')
+file_demo <- read.table('/Users/rh/Documents/ds004152/participants.tsv')%>%
+  rename(participant_ID = participant_id)
 ```
 
 ```{r preprocessing,include=FALSE}
 #calculate local mean and rt adjustment
+file_tbt <- merge(file_demo,file_tbt, by = "participant_ID")
 file_tbt <- file_tbt %>%
   group_by(participant_ID,blockLoop_thisRepN)%>% 
   mutate(rt_adjustment = trialResp_rt -lag(trialResp_rt,1))%>%
@@ -39,6 +46,10 @@ file_tbt$feedback <- NA
 file_tbt$feedback[which(file_tbt$outcome == 0)] <- "early"
 file_tbt$feedback[which(file_tbt$outcome == 1)] <- "on_time"
 file_tbt$feedback[which(file_tbt$outcome == 2)] <- "late"
+
+file_tbt$feedback_dich <- NA
+file_tbt$feedback_dich[which(file_tbt$outcome != 1)] <- "incorrect"
+file_tbt$feedback_dich[which(file_tbt$outcome == 1)] <- "correct"
 
 # add in hand and pattern
 pattern1_list <- c(1,2,5,6,9,10)
@@ -89,21 +100,34 @@ rtDev_outlier <-quantile(file_tbt$last_rt_deviance_mean10, c(0.01,0.99),na.rm = 
 file_tbt$rtDev_include = 0
 file_tbt$rtDev_include[which(file_tbt$last_rt_deviance_mean10 >= rtDev_outlier[1] & file_tbt$last_rt_deviance_mean10 <= rtDev_outlier[2])] <- 1
 
-# ERP artifacts and outliers
+# ERP artifacts
 file_tbt$eeg_include = 0
-file_tbt <- file_tbt%>%filter(erpRewp != -99, rERPRewp!=-99)
-eeg_outlier <- c(quantile(file_tbt$erpRewp, c(0.01,0.99)),
-                 quantile(file_tbt$rERPRewp, c(0.01,0.99)))
-file_tbt$eeg_include[which(file_tbt$erpRewp >= eeg_outlier[1] &  file_tbt$erpRewp <=  eeg_outlier[2] & file_tbt$rERPRewp >= eeg_outlier[3] &  file_tbt$erpRewp <=  eeg_outlier[4])] <- 1
+rtEEG_outlier <- quantile(file_tbt$rERPRewp[which(file_tbt$erpRewp != -99, file_tbt$rERPRewp!=-99)], c(0.01,0.99),na.rm = TRUE)
 
-# print(table(file_tbt$rt_include))
-# print(table(file_tbt$rtAdj_include))
-# print(table(file_tbt$eeg_include))
+file_tbt$eeg_include[which(file_tbt$erpRewp != -99 & file_tbt$rERPRewp !=-99 & file_tbt$rERPRewp > rtEEG_outlier[1] & file_tbt$rERPRewp < rtEEG_outlier[2])] <- 1
+
 ```
 
-```{r data inclusion}
-print(paste0("Inclusion rate = ",round(length(which(file_tbt$rt_include == 1 & file_tbt$rtAdj_include==1 & file_tbt$eeg_include==1 & file_tbt$rtDev_include == 1))/nrow(file_tbt),2)))
-file_tbt <- file_tbt%>%filter(rt_include==1,rtAdj_include==1,eeg_include==1, rtDev_include == 1)
+```{r generate a vector differentiating below or above mean RT adjustment,echo = FALSE}
+file_tbt$include <- as.numeric(file_tbt$rt_include == 1 & file_tbt$rtAdj_include==1 & file_tbt$eeg_include==1 & file_tbt$rtDev_include == 1)
+
+rt_adjust_mean_summary <- file_tbt%>%
+  filter(include == 1)%>%
+  group_by(tempo,feedback,participant_ID)%>%
+  summarise(mean_rt_adjust = mean(rt_adjustment,na.rm = TRUE),
+            mean_rt = mean(trialResp_rt, na.rm = TRUE))
+
+file_tbt_lab <- left_join(file_tbt,rt_adjust_mean_summary,by = c("tempo","feedback","participant_ID"))%>%
+  mutate(rt_adjust_cat = as.numeric(rt_adjustment >= mean_rt_adjust),
+         rt_cat = as.numeric(trialResp_rt >= mean_rt))
+
+write.csv(file_tbt_lab%>%
+  select(participant_ID,blockLoop_thisRepN,trialLoop_thisRepN,rt_adjust_cat,rt_cat),'/Users/rh/Documents/ds004152/R/rt_vector.csv')
+```
+
+```{r data exclusion}
+print(paste0("Inclusion rate = ",round(length(which(file_tbt$include == 1))/nrow(file_tbt),2)))
+file_tbt <- file_tbt%>%filter(include == 1)
 ```
 
 #Behavioural analysis
@@ -164,10 +188,10 @@ ggplot(resEEG, aes(x=correct, y=rERPRewp, color=correct)) +
 
 # trial-by-trial EEG predicting RT adjustments
 ```{r include = FALSE}
-file_tbt_slow<- file_tbt%>%filter(tempo == "slow")
+file_tbt_slow <- file_tbt%>%filter(tempo == "slow")
 file_tbt_slow$feedback <- factor(file_tbt_slow$feedback,levels = c("on_time","early","late"))
 
-lm_slow <- lmer(scale(rt_adjustment) ~ feedback * scale(rERPRewp)+chunk_location + feedback * scale(last_rt_deviance_mean10)+ (1|participant_ID), data= file_tbt_slow)
+lm_slow <- lmer(rt_adjustment ~ feedback * scale(rERPRewp) + chunk_location + main_hand * handedness + feedback * scale(last_rt_deviance_mean10)+ (last_rt_deviance_mean10+1|participant_ID), data= file_tbt_slow)
 summary(lm_slow)
 
 plot_model(lm_slow,type = "pred",terms = c("rERPRewp","feedback"))
@@ -176,62 +200,98 @@ plot_model(lm_slow,type = "pred",terms = c("rERPRewp"))
 
 ```{r,echo = FALSE}
 file_tbt$feedback <- factor(file_tbt$feedback, levels = c("on_time","early","late"))
-file_tbt$tempo <- factor(file_tbt$tempo, levels = c("slow","fast","medium"))
+file_tbt$tempo <- factor(file_tbt$tempo, levels = c("slow","medium","fast"))
+
 #baseline model
-lm0 <- lmer(scale(rt_adjustment) ~ tempo * feedback + chunk_location +  last_rt_deviance_mean10+ (1|participant_ID), data= file_tbt)
+lm0 <- lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) + (1|participant_ID), data= file_tbt)
 
-lm1 <- lmer(scale(rt_adjustment) ~  scale(rERPRewp) + tempo * feedback + chunk_location + scale(last_rt_deviance_mean10) +  (1|participant_ID), data= file_tbt)
+lm1<- lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) +  scale(last_rt_deviance_mean10)+ (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-lm2 <- lmer(scale(rt_adjustment) ~  tempo * feedback * scale(rERPRewp) + chunk_location + scale(last_rt_deviance_mean10) + (1|participant_ID), data= file_tbt)
+lm2<- lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) +  tempo * feedback* scale(last_rt_deviance_mean10)+ (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-lm3 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (1|participant_ID), data= file_tbt)
+lm3 <-  lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-lm4 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (1|participant_ID), data= file_tbt)
+lm4 <- lmer(rt_adjustment ~ tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-lm5 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (scale(rERPRewp)+ 1|participant_ID), data= file_tbt)
-
-lm6 <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+lm5 <- lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+ scale(rERPRewp)+1|participant_ID), data= file_tbt)
 ```
 
 ```{r}
-anova(lm0,lm1,lm2,lm3,lm4,lm5,lm6)
-summary(lm6)
+anova(lm0,lm1,lm2,lm3,lm4,lm5)
+summary(lm3)
+print(paste0(c("r-squared of rERPRewP, R2m: ", "r-squared of rERPRewP, R2c:"),round(r.squaredGLMM(lm2) - r.squaredGLMM(lm4),4)))
+tab_model(lm3,file = "/Users/rh/Documents/ds004152/R/table.html")
+```
 
-plot_model(lm6,type = "pred",terms = c("rERPRewp","feedback","tempo"))
-plot_model(lm6,type = "est",show.values = TRUE)
-plot_model(lm6,type = "pred",terms = c("last_rt_deviance_mean10"))
-plot_model(lm6,type = "pred",terms = c("chunk_location","tempo"))
+```{r include = FALSE}
+fig4a <- plot_model(lm3,type = "pred",terms = c("rERPRewp","feedback"))+annotation_custom(grid.text("tempo = slow", x=0.55,  y=0.9, gp=gpar(col="firebrick", fontsize=14, fontface="bold")))+scale_color_brewer(palette = "Set2")+scale_fill_brewer(palette = "Set2")+theme_sjplot2()
+fig4b <- plot_model(lm3,type = "pred",terms = c("rERPRewp","tempo"))+theme_test()+annotation_custom(grid.text("feedback = on time", x=0.55,  y=0.9, gp=gpar(col="firebrick", fontsize=14, fontface="bold")))+theme_sjplot2()
+plot_model(lm3,type = "est",show.values = TRUE)+theme_test()
+fig4c <-plot_model(lm3,type = "pred",terms = c("last_rt_deviance_mean10"))+theme_sjplot2()
+
+fig4d <- plot_model(lm3,type = "pred",terms = c("tempo","feedback")) +theme_sjplot2()
+fig4e <- plot_model(lm3,type = "pred",terms = c("chunk_location","tempo"))+annotation_custom(grid.text("AAABAA", x=0.85,  y=0.9, gp=gpar(col="firebrick", fontsize=14, fontface="bold")))+annotation_custom(grid.text("AABA", x=0.15,  y=0.9, gp=gpar(col="firebrick", fontsize=14, fontface="bold")))+theme_sjplot2()
+
 ```
 
 ```{r traditional ERP for comparison, include = FALSE}
-lm6b <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(erpRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10)  + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+lm3b <-  lmer(rt_adjustment ~ tempo * feedback * scale(erpRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10)  + (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-summary(lm6b)
+summary(lm3b)
 ```
 
-```{r relevelling to early feedback type, include=FALSE}
+```{r relevellinge, include=FALSE}
 file_tbt$feedback <- relevel(file_tbt$feedback, ref = "early")
-lm6c <-  lmer(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + main_hand + (tempo + 1|participant_ID), data= file_tbt)
+lm3c <-  lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
 
-summary(lm6c)
+summary(lm3c)
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "fast")
+lm3c2 <-  lmer(rt_adjustment ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+1|participant_ID), data= file_tbt)
+
+summary(lm3c2)
 ```
 
 #Bayesian regression
 ```{r, include = FALSE}
 file_tbt$feedback <- relevel(file_tbt$feedback, ref = "on_time")
-m_rERP <- brm(scale(rt_adjustment) ~ tempo * feedback * scale(rERPRewp) + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10)+ main_hand + (tempo + 1|participant_ID),
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "slow")
+m_rERP <- brm(rt_adjustment ~ tempo * feedback * rERPRewp + chunk_location + tempo * feedback * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10+1|participant_ID),
               data = file_tbt,
-              save_all_pars = TRUE,
+              save_all_ars = TRUE,
               seed = 123,
-              file = "/Users/rh/Documents/ds004152/R/m_rERP",
-              iter = 1000, warmup = 500, chains = 4, cores = 4,
+              file = "/Users/rh/Documents/ds004152/R/m_rERP",#m_rERP_collapsed
+              iter = 500, warmup = 250, chains = 4, cores = 4,
               control = list(adapt_delta = 0.99))
 ```
 
-```{r}
+```{r,include = TRUE}
 summary(m_rERP)$fixed
-plot_model(m_rERP,type = "pred", terms = c("rERPRewp","tempo","feedback"))
+posterior_summary(m_rERP)
+p_map(m_rERP)
 ```
 
-
 *Conclusion: modest evidence that more positive trial-by-trial rERP in the slow - on time condition predicts slowing of RT in the next trial. This also applies to traditional ERP.*
+
+```{r}
+ggarrange(fig4a,fig4d,                                                 # First row with scatter plot
+          ggarrange(fig4c, fig4e, nrow = 2, labels = c("C", "D","E")), # Second row with box and dot plots
+          ncol = 3, 
+          labels = c("A","B")                                        # Labels of the scatter plot
+          ) 
+ggsave('/Users/rh/Documents/ds004152/R/fig4.png',width = 14, height = 8, units = "in",dpi = 300)
+
+plot_model(lm3,type = "pred",terms = c("rERPRewp","feedback","tempo"))+theme_sjplot2()
+ggsave('/Users/rh/Documents/ds004152/R/fig4_SI.png',width = 7, height = 4, units = "in",dpi = 300)
+```
+
+#supplementary analysis: group incorrect responses together
+```{r include = FALSE}
+file_tbt$tempo <- factor(file_tbt$tempo,levels = c("slow","medium","fast"))
+file_tbt$feedback_dich <- factor(file_tbt$feedback_dich, levels = c("correct","incorrect"))
+lm3d <-  lmer(rt_adjustment ~ tempo * feedback_dich * rERPRewp + chunk_location + tempo * feedback_dich * scale(last_rt_deviance_mean10) + (last_rt_deviance_mean10 + 1|participant_ID), data= file_tbt)
+plot_model(lm3d,type = "pred", terms = c("rERPRewp","feedback_dich","tempo"))
+anova(lm3,lm4,lm3d)
+```
+
+# Conclusion: dichotomous grouping of feedback type is not better than three feedback types in terms of model fitting.
