@@ -15,11 +15,11 @@ ps = {'01','02','03','04','05','06','07','08','09','10','11','13','14','15','16'
 
 % Set data folder - change as needed
 if ispc
-    dataFolder = 'E:\OneDrive - Nexus365\Projects\2021_EEG_DrumTrainer_Hassall\data';
-    outputFolder = 'E:\OneDrive - Nexus365\Projects\2021_EEG_DrumTrainer_Hassall\analysis\output';
-else
     dataFolder = '/Users/chassall/OneDrive - Nexus365/Projects/2021_EEG_DrumTrainer_Hassall/data';
     outputFolder = '/Users/chassall/OneDrive - Nexus365/Projects/2021_EEG_DrumTrainer_Hassall/analysis/output';
+else
+    dataFolder = ' /Users/rh/Documents/ds004152/';
+    outputFolder = '/Users/rh/Documents/ds004152/R/';
 end
 
 if ~exist(outputFolder)
