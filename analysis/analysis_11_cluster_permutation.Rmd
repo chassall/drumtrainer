@@ -1,0 +1,515 @@
+---
+title: "data-driven perm tests"
+author: "Ryan Yan"
+output: html_notebook
+---
+
+Code for Yan, Y., Hunt, L. T., & Hassall, C. D. (2023). Reward positivity biases interval production in a continuous timing task. bioRxiv, 2023-07.
+
+Contact: Ryan Yan, Department of Psychology, Stanford University, ryany98@stanford.edu
+
+*data-driven analysis to clarify the window*
+
+# permutation tests helper functions
+```{r}
+# get adjacency matrix for cluster-based permutations
+get.adjacency.matrix <- function(x, threshold) {
+  x <- ifelse(abs(x) > threshold, 1, 0)
+  n <- length(x)
+  adjacency_matrix <- matrix(0, n, n)
+  for (i in 1:n) {
+    for (j in (i+1):n) {
+      if (x[i] == 1 & x[j] == 1) {
+        adjacency_matrix[i,j] <- 1
+        adjacency_matrix[j,i] <- 1
+      }
+    }
+  }
+  return(adjacency_matrix)
+}
+```
+
+
+```{r}
+# Define a function to calculate cluster-level p-values
+get_cluster_p_values <- function(orig_cluster_size, num_permutations, t_values) {
+  cluster_p_values <- numeric(length(orig_cluster_size))
+  for (i in 1:num_permutations) {
+    # permuted_t_values <- sign(runif(length(t_values), -1, 1)) * abs(t_values)
+    permuted_t_values <- sample(t_values)
+    permuted_adjacency_matrix <- abs(permuted_t_values) > threshold
+    permuted_cluster <- get_cluster_sizes(permuted_adjacency_matrix, time)
+    permuted_cluster_sizes <- permuted_cluster$cluster
+    for (j in 1:length(orig_cluster_size)) {
+      if (length(permuted_cluster_sizes) != 0){
+        cluster_p_values[j] <- cluster_p_values[j] + (permuted_cluster_sizes >= orig_cluster_size[j])
+      }
+    }
+  }
+  cluster_p_values <- pmin(cluster_p_values / num_permutations, 1)
+  return(cluster_p_values)
+}
+```
+
+
+```{r}
+# Define a function to calculate cluster sizes
+get_cluster_sizes <- function(x,time) {
+  cluster_indices <- cumsum(x)
+  cluster_sizes <- tapply(cluster_indices, cluster_indices, length)
+  cluster_sizes <- cluster_sizes[cluster_sizes >= cluster_extent_threshold & names(cluster_sizes) != 0]
+  start_time <- c()
+  end_time <- c()
+
+  for (i in 1:length(cluster_sizes)){
+    temp_time <- time[which(cluster_indices %in% names(cluster_sizes)[i])]
+    start_time[i] <- min(temp_time)
+    end_time[i] <- max(temp_time)
+  }
+  cluster_info <- list()
+  cluster_info$cluster <- cluster_sizes
+  cluster_info$start_time <- start_time
+  cluster_info$end_time <- end_time
+  return(cluster_info)
+}
+```
+
+
+# read in data from matlab
+```{r }
+file_ERP_data_driven_raw <- read.csv(paste0(dataset_path,'R/tbt_meta_data_driven.csv'))
+
+file_ERP_data_driven_raw%>%
+  arrange(participant_ID, blockLoop_thisRepN,trialLoop_thisRepN,rEEG_time)%>%
+  head(10)
+```
+
+## pre-processing as above
+
+## (1) calculate RT adjustment and local mean; (2) recode some categorical variables; (3) add in location-in-chunk
+
+```{r echo=FALSE}
+#calculate local mean and rt adjustment
+file_ERP_data_driven_raw <- merge(file_demo,file_ERP_data_driven_raw, by = "participant_ID")
+
+# add in text variables of tempo and outcome
+file_ERP_data_driven_raw$tempo <- NA
+file_ERP_data_driven_raw$tempo[which(file_ERP_data_driven_raw$blockType <= 4)] <- "fast"
+file_ERP_data_driven_raw$tempo[which(file_ERP_data_driven_raw$blockType >=9)] <- "slow"
+file_ERP_data_driven_raw$tempo[which(file_ERP_data_driven_raw$blockType >= 5 & file_ERP_data_driven_raw$blockType <= 8)] <- "medium"
+
+file_ERP_data_driven_raw$feedback <- NA
+file_ERP_data_driven_raw$feedback[which(file_ERP_data_driven_raw$outcome == 0)] <- "early"
+file_ERP_data_driven_raw$feedback[which(file_ERP_data_driven_raw$outcome == 1)] <- "on_time"
+file_ERP_data_driven_raw$feedback[which(file_ERP_data_driven_raw$outcome == 2)] <- "late"
+
+
+# add in hand and pattern
+pattern1_list <- c(1,2,5,6,9,10)
+pattern2_list <- c(3,4,7,8,11,12)
+right_list <- c(2,4,6,8,10,12)
+left_list <- c(1,3,5,7,9,11)
+
+file_ERP_data_driven_raw$pattern <- NA
+file_ERP_data_driven_raw$main_hand <- NA
+
+file_ERP_data_driven_raw$pattern[file_ERP_data_driven_raw$blockType %in% pattern1_list] <- "pattern1"
+file_ERP_data_driven_raw$pattern[file_ERP_data_driven_raw$blockType %in% pattern2_list] <- "pattern2"
+
+file_ERP_data_driven_raw$main_hand[file_ERP_data_driven_raw$blockType %in% right_list] <- "right"
+file_ERP_data_driven_raw$main_hand[file_ERP_data_driven_raw$blockType %in% left_list] <- "left"
+
+file_ERP_data_driven_raw <- file_ERP_data_driven_raw %>%
+  group_by(participant_ID,blockLoop_thisRepN)%>% 
+  mutate(
+         last_rt_adjustment = lag(rt_adjustment,1),
+         rt_mean10 = rollmean(trialResp_rt, k = 10, fill = NA, align = "right"),
+         rt_deviance_mean10 = trialResp_rt - rt_mean10,
+         last_rt_deviance_mean10 = lag(rt_deviance_mean10,1))
+
+#add in chunking var
+file_ERP_data_driven_raw$chunk_location <- NA
+file_ERP_data_driven_raw <- file_ERP_data_driven_raw%>%
+  rowwise()%>%
+  mutate(chunk_location = ifelse(pattern == "pattern1",(trialLoop_thisRepN)%%4, #00,01,02,03
+         ifelse(pattern == "pattern2",10+(trialLoop_thisRepN)%%6,NA)))#10,11,12,13,14,15
+file_ERP_data_driven_raw$chunk_location <- as.factor(file_ERP_data_driven_raw$chunk_location)
+```
+
+## exclude practice blocks
+```{r}
+num_practice_block <- 3
+file_ERP_data_driven_raw <- file_ERP_data_driven_raw%>%
+  filter(blockLoop_thisRepN >= num_practice_block, trialResp_corr == 1)
+```
+
+## exclude outliers (same criteria as above)
+```{r}
+file_ERP_data_driven_raw$rt_include = 0
+file_ERP_data_driven_raw$rt_include[which(file_ERP_data_driven_raw$tempo == "fast" & file_ERP_data_driven_raw$trialResp_rt >= tbt_outlier[1] &
+                                file_ERP_data_driven_raw$trialResp_rt <= tbt_outlier[2] & file_ERP_data_driven_raw$trialResp_corr == 1)] <- 1
+file_ERP_data_driven_raw$rt_include[which(file_ERP_data_driven_raw$tempo == "medium" & file_ERP_data_driven_raw$trialResp_rt >= tbt_outlier[3] &
+                                file_ERP_data_driven_raw$trialResp_rt <= tbt_outlier[4] & file_ERP_data_driven_raw$trialResp_corr == 1)] <- 1
+file_ERP_data_driven_raw$rt_include[which(file_ERP_data_driven_raw$tempo == "slow" & file_ERP_data_driven_raw$trialResp_rt >= tbt_outlier[5] &
+                                file_ERP_data_driven_raw$trialResp_rt <= tbt_outlier[6] & file_ERP_data_driven_raw$trialResp_corr == 1)] <- 1
+
+file_ERP_data_driven_raw$rtAdj_include = 0
+file_ERP_data_driven_raw$rtAdj_include[which(file_ERP_data_driven_raw$rt_adjustment >= rtAdj_outlier[1] &
+                                     file_ERP_data_driven_raw$rt_adjustment <= rtAdj_outlier[2])] <- 1
+
+file_ERP_data_driven_raw$rtDev_include = 0
+file_ERP_data_driven_raw$rtDev_include[which((file_ERP_data_driven_raw$last_rt_deviance_mean10 >= rtDev_outlier[1] &
+                                     file_ERP_data_driven_raw$last_rt_deviance_mean10 <= rtDev_outlier[2])| file_ERP_data_driven_raw$trialLoop_thisRepN < 9)] <- 1
+
+file_ERP_data_driven_raw$eeg_include = 0
+file_ERP_data_driven_raw$eeg_include[which(file_ERP_data_driven_raw$erpRewp != -99 & file_ERP_data_driven_raw$rERPRewp !=-99 &
+                                   file_ERP_data_driven_raw$rERPRewp > rtEEG_outlier[1] & file_ERP_data_driven_raw$rERPRewp < rtEEG_outlier[2])] <- 1
+```
+
+```{r }
+file_ERP_data_driven_raw$include <- as.numeric(file_ERP_data_driven_raw$rt_include == 1 & file_ERP_data_driven_raw$rtAdj_include==1 & file_ERP_data_driven_raw$eeg_include==1 & file_ERP_data_driven_raw$rtDev_include == 1)
+
+print(paste0("Inclusion rate = ",round(length(which(file_ERP_data_driven_raw$include == 1))/nrow(file_ERP_data_driven_raw),2)))
+file_ERP_data_driven <- file_ERP_data_driven_raw%>%filter(include == 1)
+```
+
+# get the point-wise regression coefficients
+## slow
+```{r slow, eval = F}
+file_ERP_data_driven$rEEG_time <- as.factor(file_ERP_data_driven$rEEG_time)
+times = levels(file_ERP_data_driven$rEEG_time)
+file_ERP_data_driven$feedback <- factor(file_ERP_data_driven$feedback, levels = c("on_time","early","late"))
+
+ref_tempo = c("slow","medium","fast")
+file_ERP_data_driven$tempo <- factor(file_ERP_data_driven$tempo, levels = ref_tempo)
+
+coef_out <- data.frame(`terms`=character(),
+                       `Estimate`=double(),
+                 `std_error`=double(),
+                 `df`=integer(),
+                 `t_val`=double(),
+                 `p_val`=double(),
+                 `rEEG_time`=double())
+
+for (t in 1:length(times)){
+  print(times[t])
+  temp_data <- file_ERP_data_driven%>%
+    filter(rEEG_time == times[t])
+  lm1_temp <- lmer(rt_adjustment ~  rEEG * tempo * feedback + chunk_location + last_rt_deviance_mean10 * tempo  + (1|participant_ID), data = temp_data)
+  sum_temp <- as.data.frame(summary(lm1_temp)$coefficients)
+  sum_temp$rEEG_time <- times[t]
+  sum_temp <- sum_temp%>%rownames_to_column("terms")
+  coef_out = rbind(coef_out,sum_temp)
+}
+
+names(coef_out) <- c("terms","Estimate", "std_error","df","t_value","p_val","rEEG_time")
+
+write_csv(coef_out,paste0(dataset_path,'R/data_driven_lm1_coef_ref_slow.csv'))
+```
+
+```{r}
+coef_rEEG_slow <- read_csv(paste0(dataset_path,'R/data_driven_lm1_coef_ref_slow.csv'))%>%
+  filter(terms == "scale(rEEG)")
+
+vline <- read_csv(paste0(dataset_path,'R/lm1_meta.csv'))
+
+coef_rEEG_slow$rEEG_time <- as.numeric(coef_rEEG_slow$rEEG_time)
+
+p1 <- ggplot(coef_rEEG_slow, aes(x = rEEG_time, y = t_value))+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  geom_segment(aes(x = 240, y = summary_lm1$coefficients[2], xend = 340, yend = summary_lm1$coefficients[2]),size=3,color = 'grey33')+
+  geom_hline(yintercept = 2, color = "blue")+
+  geom_hline(yintercept = -2, color = "blue")+
+  geom_line(color = 'grey', size = 2)+
+  # geom_point(aes(color = (p_val >= 0.05)),size=2)+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "slow")
+p1
+
+coef_rEEG_slow$rEEG_time[coef_rEEG_slow$p_val < 0.05]
+```
+
+## medium
+```{r medium, eval = F}
+ref_tempo = c("medium","slow","fast")
+file_ERP_data_driven$tempo <- factor(file_ERP_data_driven$tempo, levels = ref_tempo)
+
+coef_out <- data.frame(`terms`=character(),
+                       `Estimate`=double(),
+                 `std_error`=double(),
+                 `df`=integer(),
+                 `t_val`=double(),
+                 `p_val`=double(),
+                 `rEEG_time`=double())
+
+for (t in 1:length(times)){
+  print(times[t])
+  temp_data <- file_ERP_data_driven%>%
+    filter(rEEG_time == times[t])
+  lm1_temp <- lmer(rt_adjustment ~  scale(rEEG) * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo  + (1|participant_ID), data = temp_data)
+  sum_temp <- as.data.frame(summary(lm1_temp)$coefficients)
+  sum_temp$rEEG_time <- times[t]
+  sum_temp <- sum_temp%>%rownames_to_column("terms")
+  coef_out = rbind(coef_out,sum_temp)
+}
+
+names(coef_out) <- c("terms","Estimate", "std_error","df","t_value","p_val","rEEG_time")
+
+write_csv(coef_out,paste0(dataset_path,'R/data_driven_lm1_coef_ref_medium.csv'))
+```
+
+```{r}
+coef_rEEG_medium <- read_csv(paste0(dataset_path,'R/data_driven_lm1_coef_ref_medium.csv'))%>%
+  filter(terms == "scale(rEEG)")
+
+coef_rEEG_medium$rEEG_time <- as.numeric(coef_rEEG_medium$rEEG_time)
+p2 <- ggplot(coef_rEEG_medium, aes(x = rEEG_time, y = t_value))+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  geom_segment(aes(x = 240, y = summary_lm1$coefficients[2], xend = 340, yend = summary_lm1$coefficients[2]),size=3,color = 'grey33')+
+  geom_hline(yintercept = 2, color = "blue")+
+  geom_hline(yintercept = -2, color = "blue")+
+  geom_line(color = 'grey', size = 2)+
+  # geom_point(aes(color = (p_val >= 0.05)),size=2)+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "medium")
+p2
+
+coef_rEEG_medium$rEEG_time[coef_rEEG_medium$p_val < 0.05]
+```
+
+## fast
+```{r fast, eval = F}
+ref_tempo = c("fast","slow","medium")
+file_ERP_data_driven$tempo <- factor(file_ERP_data_driven$tempo, levels = ref_tempo)
+
+coef_out <- data.frame(`terms`=character(),
+                       `Estimate`=double(),
+                 `std_error`=double(),
+                 `df`=integer(),
+                 `t_val`=double(),
+                 `p_val`=double(),
+                 `rEEG_time`=double())
+
+for (t in 1:length(times)){
+  print(times[t])
+  temp_data <- file_ERP_data_driven%>%
+    filter(rEEG_time == times[t])
+  lm1_temp <- lmer(rt_adjustment ~  scale(rEEG) * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo  + (1|participant_ID), data = temp_data)
+  sum_temp <- as.data.frame(summary(lm1_temp)$coefficients)
+  sum_temp$rEEG_time <- times[t]
+  sum_temp <- sum_temp%>%rownames_to_column("terms")
+  coef_out = rbind(coef_out,sum_temp)
+}
+
+names(coef_out) <- c("terms","Estimate", "std_error","df","t_value","p_val","rEEG_time")
+
+write_csv(coef_out,paste0(dataset_path,'R/data_driven_lm1_coef_ref_fast.csv'))
+```
+
+```{r}
+coef_rEEG_fast <- read_csv(paste0(dataset_path,'R/data_driven_lm1_coef_ref_fast.csv'))%>%
+  filter(terms == "scale(rEEG)")
+
+coef_rEEG_fast$rEEG_time <- as.numeric(coef_rEEG_fast$rEEG_time)
+p3 <- ggplot(coef_rEEG_fast, aes(x = rEEG_time, y = t_value))+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  geom_segment(aes(x = 240, y = summary_lm1$coefficients[2], xend = 340, yend = summary_lm1$coefficients[2]),size=3,color = 'grey33')+
+  geom_hline(yintercept = 2, color = "blue")+
+  geom_hline(yintercept = -2, color = "blue")+
+  geom_line(color = 'grey', size = 2)+
+  # geom_point(aes(color = (p_val >= 0.05)),size=2)+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "fast")
+
+```
+
+
+# print figure
+```{r}
+p3+p2+p1
+
+ggsave('../figures/fig5_combined.png',width = 18, height = 6, units = "in",dpi = 300)
+```
+
+# permutation tests
+## slow
+```{r warning = F, message=F}
+# Define your data: t-values and beta estimates for each time point
+t_values <- coef_rEEG_slow$t_value
+time <- coef_rEEG_slow$rEEG_time
+beta_estimates <- coef_rEEG_slow$Estimate
+
+# Define your cluster-forming threshold (e.g. t-value of 2.0)
+threshold <- 2.0
+
+# Define your cluster extent threshold (e.g. minimum number of adjacent time points)
+cluster_extent_threshold <- 10
+
+# Get the adjacency matrix based on cluster-forming threshold
+adjacency_matrix <- abs(t_values) < threshold
+
+  # View(cbind(cluster_indices,time,adjacency_matrix))
+
+orig_cluster <- get_cluster_sizes(adjacency_matrix,time)
+orig_cluster_size <- orig_cluster$cluster
+
+num_permutations <- 10000
+cluster_threshold <- 0.05
+
+cluster_p_values <- get_cluster_p_values(orig_cluster_size, 
+                                         num_permutations, 
+                                         t_values)
+
+orig_cluster$start_time
+
+for (c in 1:length(orig_cluster$cluster)) {
+  start_time <- orig_cluster$start_time[c]
+  end_time <- orig_cluster$end_time[c]
+  cluster_size <- orig_cluster$cluster[c]
+  print(paste("Cluster from", start_time, "ms to", end_time, "ms (", cluster_size, "time points) with p-value", cluster_p_values[c]))
+}
+
+d <- as.data.frame(cbind(orig_cluster$start_time,orig_cluster$end_time,cluster_p_values))
+names(d)[1:2] <- c("Start","End")
+write_csv(d,paste0(dataset_path,'R/cluster.csv'))
+```
+
+```{r}
+ggplot(coef_rEEG_slow, aes(x = rEEG_time, y = t_value, color = (abs(t_value) > 2)))+
+  geom_line(color = 'grey')+
+  geom_point()+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  geom_segment(aes(x = orig_cluster$start_time[1], y = 0, xend = orig_cluster$end_time[1], yend = 0),size=3,color = 'grey33')+
+  annotate("text",label = paste("p = ",cluster_p_values[1]), x = orig_cluster$start_time[1], y = 0.5)+
+  geom_segment(aes(x = orig_cluster$start_time[2], y = 0, xend = orig_cluster$end_time[2], yend = 0),size=3,color = 'grey33')+
+  annotate("text",label = paste("p = ",cluster_p_values[2]), x = orig_cluster$start_time[2], y = 0.5)+
+  geom_segment(aes(x = orig_cluster$start_time[3], y = 0, xend = orig_cluster$end_time[3], yend = 0),size=3,color = 'grey33')+
+  annotate("text",label = paste("p = ",cluster_p_values[3]), x = orig_cluster$start_time[3], y = 0.5)+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "slow")
+```
+
+## medium
+```{r warning = F, message=F}
+# Define your data: t-values and beta estimates for each time point
+t_values <- coef_rEEG_medium$t_value
+time <- coef_rEEG_medium$rEEG_time
+beta_estimates <- coef_rEEG_medium$Estimate
+
+# Define your cluster-forming threshold (e.g. t-value of 2.0)
+threshold <- 2.0
+
+# Define your cluster extent threshold (e.g. minimum number of adjacent time points)
+cluster_extent_threshold <- 10
+
+# Get the adjacency matrix based on cluster-forming threshold
+adjacency_matrix <- abs(t_values) < threshold
+
+  # View(cbind(cluster_indices,time,adjacency_matrix))
+# Define a function to calculate cluster sizes
+
+orig_cluster <- get_cluster_sizes(adjacency_matrix,time)
+orig_cluster_size <- orig_cluster$cluster
+
+num_permutations <- 10000
+cluster_threshold <- 0.05
+
+cluster_p_values <- get_cluster_p_values(orig_cluster_size, 
+                                         num_permutations, 
+                                         t_values)
+
+orig_cluster$start_time
+
+for (c in 1:length(orig_cluster$cluster)) {
+  start_time <- orig_cluster$start_time[c]
+  end_time <- orig_cluster$end_time[c]
+  cluster_size <- orig_cluster$cluster[c]
+  print(paste("Cluster from", start_time, "ms to", end_time, "ms (", cluster_size, "time points) with p-value", cluster_p_values[c]))
+}
+```
+
+```{r}
+ggplot(coef_rEEG_medium, aes(x = rEEG_time, y = t_value, color = (abs(t_value) > 2)))+
+  geom_line(color = 'grey')+
+  geom_point()+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "medium")
+```
+
+
+## fast
+```{r warning = F, message=F}
+# Define your data: t-values and beta estimates for each time point
+t_values <- coef_rEEG_fast$t_value
+time <- coef_rEEG_fast$rEEG_time
+beta_estimates <- coef_rEEG_fast$Estimate
+
+# Define your cluster-forming threshold (e.g. t-value of 2.0)
+threshold <- 2.0
+
+# Define your cluster extent threshold (e.g. minimum number of adjacent time points)
+cluster_extent_threshold <- 10
+
+# Get the adjacency matrix based on cluster-forming threshold
+adjacency_matrix <- abs(t_values) < threshold
+
+orig_cluster <- get_cluster_sizes(adjacency_matrix,time)
+orig_cluster_size <- orig_cluster$cluster
+
+num_permutations <- 10000
+cluster_threshold <- 0.05
+
+cluster_p_values <- get_cluster_p_values(orig_cluster_size, 
+                                         num_permutations, 
+                                         t_values)
+
+orig_cluster$start_time
+
+for (c in 1:length(orig_cluster$cluster)) {
+  start_time <- orig_cluster$start_time[c]
+  end_time <- orig_cluster$end_time[c]
+  cluster_size <- orig_cluster$cluster[c]
+  print(paste("Cluster from", start_time, "ms to", end_time, "ms (", cluster_size, "time points) with p-value", cluster_p_values[c]))
+}
+```
+
+```{r}
+ggplot(coef_rEEG_fast, aes(x = rEEG_time, y = t_value, color = (abs(t_value) > 2)))+
+  geom_line(color = 'grey')+
+  geom_point()+
+  geom_hline(yintercept = 0,linetype='dotted')+
+  scale_color_brewer(palette = "Set1")+
+  labs(title = "fast")
+```
+
+# joint lm for all 3 significant windows in the slow tempo
+```{r}
+# calculate mean amplitude for each cluster window
+df_cluster<- file_ERP_data_driven_raw%>%
+  mutate(cluster = ifelse(rEEG_time >= orig_cluster$start_time[1] &
+                            rEEG_time <= orig_cluster$end_time[1],"c1",
+                          ifelse(rEEG_time >= orig_cluster$start_time[2] &
+                           rEEG_time <= orig_cluster$end_time[2],"c2",
+                           ifelse(
+                            rEEG_time >= orig_cluster$start_time[3] &
+                           rEEG_time <= orig_cluster$end_time[3],"c3",
+                           NA)
+                          )
+                          )
+         )
+
+df_cluster_lm <- df_cluster%>%
+  filter(!is.na(cluster))%>%
+  group_by(participant_ID,tempo,blockLoop_thisRepN,trialLoop_thisRepN,
+           rt_adjustment,feedback, chunk_location,cluster)%>%
+  summarise(rEEG = mean(rEEG,na.rm = T))%>%
+  pivot_wider(names_from = cluster, values_from = rEEG)
+
+df_cluster_lm$feedback <- factor(df_cluster_lm$feedback, levels = 
+                                         c("on_time","early","late"))
+df_cluster_lm$tempo <- factor(df_cluster_lm$tempo, levels = 
+                                         c("slow","fast","medium"))
+sl1 <- lmer(rt_adjustment ~  c1 * tempo * feedback + c2 * tempo * feedback + c3 * tempo * feedback+ (1|participant_ID) ,df_cluster_lm)
+summary(sl1)
+```

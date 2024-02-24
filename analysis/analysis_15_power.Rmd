@@ -1,0 +1,261 @@
+---
+title: "power_analysis"
+author: "Ryan Yan"
+date: "2023-02-14"
+output: html_document
+---
+
+Code for Yan, Y., Hunt, L. T., & Hassall, C. D. (2023). Reward positivity biases interval production in a continuous timing task. bioRxiv, 2023-07.
+
+Contact: Ryan Yan, Department of Psychology, Stanford University, ryany98@stanford.edu
+
+# summary stats of red X
+```{r}
+redXfreq <- R.matlab::readMat("./data_files/redXfreq.mat")
+redXfreq <- data.frame(redXfreq$redXfreq) %>% 
+  rename(fast = X1,
+         medium = X2,
+         slow = X3)
+```
+
+```{r}
+mean(redXfreq$fast)
+sd(redXfreq$fast)
+summary(redXfreq$fast)
+sum(redXfreq$fast >= 6)
+
+mean(redXfreq$medium)
+sd(redXfreq$medium)
+summary(redXfreq$medium)
+sum(redXfreq$medium >= 6)
+
+mean(redXfreq$slow)
+sd(redXfreq$slow)
+summary(redXfreq$slow)
+sum(redXfreq$slow >= 6)
+```
+
+# post hoc power analysis
+
+```{r}
+library(simr)
+detach(package:stringr,unload=TRUE)
+file_tbt <- read_csv(paste0(dataset_path,"R/data_tbt.csv"))
+```
+
+```{r}
+head(file_tbt)
+
+df_pwr <- file_tbt %>%
+  filter(tempo == "slow",feedback == "on_time")
+
+View(df_pwr)
+```
+
+```{r}
+#make the blockNum (because now all the medium and fast blocks were picked out)
+df_pwr$blockNum <- NULL
+
+for (s in unique(df_pwr$participant_ID)){
+  blocks <- unique(df_pwr$blockLoop_thisRepN[df_pwr$participant_ID == s])
+
+  for (b in 1:length(blocks)){
+    df_pwr$blockNum[df_pwr$participant_ID == s & df_pwr$blockLoop_thisRepN == blocks[b]] <- b
+  }
+}
+
+unique(df_pwr$blockNum)
+max(df_pwr$blockNum)
+
+
+lm1_slowontime <- lmer(rt_adjustment ~ rERPRewp + chunk_location + last_rt_deviance_mean10 +(1|participant_ID) +(1|blockNum), df_pwr)
+
+tab_model(lm1_slowontime,digits = 4)
+```
+
+```{r}
+set.seed(999)
+
+lm1_slowontime_ai <- extend(lm1_slowontime,along="blockNum",n=20)
+
+# perform power simulation
+lm1_slowontime_ai_pwr <- powerSim(lm1_slowontime_ai, fixed("rERPRewp", "z"), nsim= 100)
+
+# show results
+lm1_slowontime_ai_pwr
+
+pcurve <- powerCurve(lm1_slowontime_ai, fixed("rERPRewp", "z"), along = "blockNum",
+                     breaks = seq(2,20,2),nsim = 100)
+
+png(filename="../figures/SI_fig6a.png",width = 400, height = 300, units = "px")
+plot(pcurve, xlab = "Number of blocks")
+abline(v=8, col="black")
+title(main = "Power curve: block number")
+dev.off()
+```
+
+```{r}
+# increase sample size
+lm1_slowontime_ai <- extend(lm1_slowontime, along="participant_ID", n=50)
+# perform power simulation
+lm1_slowontime_ai_pwr <- powerSim(lm1_slowontime_ai, fixed("rERPRewp", "z"), nsim=100)
+
+# show results
+lm1_slowontime_ai_pwr
+
+pcurve <- powerCurve(lm1_slowontime_ai, fixed("rERPRewp", "z"), along = "participant_ID", breaks = seq(5,50,5),nsim = 100)
+
+png(filename="../figures/SI_fig6b.png",width = 400, height = 300, units = "px")
+plot(pcurve, xlab = "Number of participants")
+abline(v=20, col="black")
+title(main = "Power curve: sample size")
+dev.off()
+```
+
+```{r}
+library(png) 
+
+plots <- lapply(ll <- list.files(patt='^SI_fig6[a-z].png$'),function(x){     
+  img <- as.raster(readPNG(x))     
+  rasterGrob(img, interpolate = FALSE) }) 
+
+plots
+
+ggsave("../figures/SI_fig7.png",width=8, height = 4,       
+       marrangeGrob(grobs = plots, nrow=1, ncol=2,top=NULL),
+        dpi = 300)
+```
+
+#sensitivity analysis
+```{r}
+lm1b <-  brm(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10 * tempo +(1|participant_ID), data= file_tbt,
+               seed = 123,
+               save_all_pars = T,
+               file = "lm1b",
+               iter = 1000, warmup = 500, chains = 4, cores = 4,
+              control = list(adapt_delta = 0.99))
+
+summary(lm1b)
+p_map(lm1b)
+plot_model(lm1b, type = "pred", terms = c("rERPRewp","tempo"))
+```
+
+## robustness to outliers and influential observations
+```{r}
+# Compute Studentized residuals
+RSTUDENT <- rstudent(lm1)
+
+# Use numeric cutoff from outlier test to identify outliers
+SUB.OUTLIERS <- abs(RSTUDENT) > 3  # -5.38
+RSTUDENT[SUB.OUTLIERS]
+
+COOK    <- cooks.distance(lm1)
+DFBETAS <- stats::dfbetas(lm1)
+
+df.cook <- data.frame(id = 1:length(COOK),cookd = COOK, rstudent = RSTUDENT)
+
+# Subjective cutoff from figure
+SUB.COOK <- COOK > 0.001 #0.15
+
+# Standard cutoff for DFBeta
+SUB.DFBETAS <- apply(abs(DFBETAS) > 0.2, 1, any)
+
+# View the extreme Cook's distance values and compare
+# to plot to make sure you captured all you wanted to capture
+COOK[SUB.COOK]
+
+SUB <- SUB.OUTLIERS | SUB.COOK
+sum(SUB)
+
+subdat <- subset(file_tbt, !SUB)
+
+lm1_sens <- lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10 * tempo +(1|participant_ID), data= subdat)
+
+car::compareCoefs(lm1,
+                  lm1_sens,
+                  pvals = T)
+```
+
+```{r}
+df1 <- as.data.frame(ggpredict(model = lm1,terms = c(
+          "rERPRewp[-30:30]","tempo","feedback"))) %>% 
+  mutate(model = "orig")
+df2 <- as.data.frame(ggpredict(model = lm1_sens,terms = c(
+          "rERPRewp[-30:30]","tempo","feedback")))%>% 
+  mutate(model = "sensitivty")
+df_comp <- rbind(df1,df2) %>% 
+  rename(RewP = x, tempo = group, feedback = facet,rt_adjustment = predicted) %>% 
+  mutate(feedback = factor(feedback, levels = c("early","late","on_time")))
+
+ggplot(df.cook, aes(x = id, y = rstudent))+
+  geom_point(aes(color = (abs(rstudent) > 3)),size = 0.4)+
+  scale_color_brewer(palette = "Paired")+
+  theme(legend.position = "none")+
+  labs(y = "residual", title = "Studentized residual")+
+  annotate("text", x = 25000, y = 4, label = "abs(reidual) < 2")+
+ggplot(df.cook, aes(x = id, y = cookd))+
+  geom_point(aes(color = (cookd > 0.001)),size = 0.4)+
+  plot_layout(nrow = 2)+
+  scale_color_brewer(palette = "Paired")+
+  theme(legend.position = "none")+
+  labs(y = "Cook's distance", title = "Cook's distance")+
+  annotate("text", x = 25000, y = 0.003, label = "Cook's D < 0.005")+
+  
+  plot_layout(nrow = 2)+
+  plot_annotation(tag_levels = "A")
+
+ggsave("../figures/SI_fig11.png",width=6, height = 6,       
+        dpi = 300)
+
+
+ggplot(df_comp %>% 
+         filter(tempo == "slow"), aes(x = RewP, y = rt_adjustment, color = feedback, linetype = model))+
+  geom_line(linewidth = 1)+
+  geom_ribbon(aes(x = RewP, ymin = conf.low, ymax = conf.high, fill = feedback, color = feedback),
+              alpha = 0.1)+
+  scale_color_manual(values = purpleOrange_palette3)+
+  scale_fill_manual(values = purpleOrange_palette3)+
+  labs(x = "RewP (uV)",
+       y = "RT adjustment (sec)",
+       title = "Slow tempo")
+ggsave("../figures/SI_fig12.png",width=4, height = 3,       
+        dpi = 300)
+
+summary(lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10 * tempo +(1|participant_ID), data= subdat %>% 
+       mutate(feedback = relevel(feedback, ref = "late"))))
+```
+
+
+# sensemaker
+```{r}
+# library(sensemakr)
+# darfur.sensitivity <- sensemakr(model = lm(rt_adjustment ~ rERPRewp + chunk_location + last_rt_deviance_mean10, data= subdat %>%
+#   filter(tempo == "slow",feedback == "on_time")), 
+#                                 treatment = "rERPRewp",
+#                                 benchmark_covariates = "chunk_location",
+#                                 kd = 1:3,
+#                                 ky = 1:3, 
+#                                 q = 1,
+#                                 alpha = 0.05, 
+#                                 reduce = TRUE)
+# darfur.sensitivity
+# summary(darfur.sensitivity)
+# plot(darfur.sensitivity)
+# 
+# # plot extreme scenario
+# plot(darfur.sensitivity, type = "extreme")
+# ovb_minimal_reporting(darfur.sensitivity)
+
+# library(COINr6)
+# nspecs <- data.frame(AgLevel = 2, NoiseFactor = c(0.5))
+# SAspecs <- list(
+#   aggregate = list(agtype = c("rERPRewp")),
+#   weights = list(NoiseSpecs = nspecs,
+#   Nominal = "Original"))
+# 
+# SAresults <- sensitivity(lm1, v_targ = "Res",
+# SA_specs = SAspecs,
+# N = 1000,
+# SA_type = "UA")
+```
+

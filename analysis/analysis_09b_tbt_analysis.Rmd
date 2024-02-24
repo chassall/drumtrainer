@@ -1,0 +1,900 @@
+---
+title: "tbt_analysis"
+author: "Ryan Yan"
+date: '2022-06-23'
+output: html_document
+---
+
+Code for Yan, Y., Hunt, L. T., & Hassall, C. D. (2023). Reward positivity biases interval production in a continuous timing task. bioRxiv, 2023-07.
+
+Contact: Ryan Yan, Department of Psychology, Stanford University, ryany98@stanford.edu
+
+# run analysis_09a_tbt_preprocessing.rmd before running this file.
+
+```{r}
+file_tbt <- read_csv(paste0(dataset_path,"R/data_tbt.csv"))
+```
+
+# desription of demographic info
+```{r}
+table(file_demo$sex)
+table(file_demo$handedness)
+summary(file_demo$age)
+sd(file_demo$age)
+```
+
+# ERP summary statistics
+```{r}
+file_ERP_long <- file_ERP%>%
+  pivot_longer(fast_early:slow_late,
+               names_to = c("tempo","feedback"),
+               names_pattern = "(.*)_(.*)", values_to = "amplitude")
+file_ERP_long$tempo <- factor(file_ERP_long$tempo, levels = c("fast","medium","slow"))
+
+file_traditional_ERP_long <- file_traditional_ERP%>%
+  pivot_longer(fast_early:slow_late,names_to = c("tempo","feedback"), 
+               names_pattern = "(.*)_(.*)", values_to = "amplitude")
+file_traditional_ERP_long$tempo <- factor(file_traditional_ERP_long$tempo, levels = c("fast","medium","slow"))
+```
+
+# look at ERP values
+```{r}
+ggplot(file_ERP_long,aes(x = feedback, y = amplitude, color = feedback))+
+  geom_violin()+
+  geom_jitter()+
+  facet_wrap(~tempo)+
+  stat_summary(geom = "pointrange",color = "black") +
+  labs(title = "rERP")+
+  geom_hline(yintercept = 0)+
+  scale_color_brewer(palette = "Set2")+
+ggplot(file_traditional_ERP_long,aes(x = feedback, y = amplitude, color = feedback))+
+  geom_violin()+
+  geom_jitter()+
+  facet_wrap(~tempo)+
+  stat_summary(geom = "pointrange",color = "black")+
+  labs(title = "traditional ERP")+
+  geom_hline(yintercept = 0)+
+  scale_color_brewer(palette = "Set2")
+```
+
+# ANOVA test for ERP amplitude
+```{r}
+file_ERP_long$tempo <- as.factor(file_ERP_long$tempo)
+file_ERP_long$tempo <- relevel(file_ERP_long$tempo, ref = "slow")
+
+file_traditional_ERP_long$tempo <- as.factor(file_traditional_ERP_long$tempo)
+file_traditional_ERP_long$tempo <- relevel(file_traditional_ERP_long$tempo, ref = "slow")
+
+lmERP <-  anova_test(data = file_ERP_long, dv = amplitude, wid = participant_ID,
+  within = c(tempo, feedback),effect.size = "pes")
+get_anova_table(lmERP)
+
+lmERP_traditional <-  anova_test(data = file_traditional_ERP_long, dv = amplitude, wid = participant_ID,
+  within = c(tempo, feedback),effect.size = "pes")
+get_anova_table(lmERP_traditional)
+```
+
+## rERP statistics
+```{r}
+file_ERP_long%>%
+  pairwise_t_test(amplitude ~ tempo, paired = TRUE,var.equal=FALSE,detailed = TRUE,
+  p.adjust.method = "bonferroni")%>%
+  kable(digits = 3)
+
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "fast")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "medium")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "slow")],mu=0)
+
+cohens_d(Pair(amplitude[tempo == "slow"], amplitude[tempo == "fast"])~1, data = file_ERP_long)
+cohens_d(Pair(amplitude[tempo == "slow"], amplitude[tempo == "medium"])~1, data = file_ERP_long)
+cohens_d(Pair(amplitude[tempo == "medium"], amplitude[tempo == "fast"])~1, data = file_ERP_long)
+
+# cohen's d 
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "early" 
+                                       & file_ERP_long$tempo == "fast")],mu=0)
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "late" 
+                                       & file_ERP_long$tempo == "fast")],mu=0)
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "early" 
+                                       & file_ERP_long$tempo == "medium")],mu=0)
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "late" 
+                                       & file_ERP_long$tempo == "medium")],mu=0)
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "early" 
+                                       & file_ERP_long$tempo == "slow")],mu=0)
+cohens_d(file_ERP_long$amplitude[which(file_ERP_long$feedback == "late" 
+                                       & file_ERP_long$tempo == "slow")],mu=0)
+
+file_ERP_long%>%
+  group_by(tempo, feedback) %>%
+  summarise(count = n(),
+    mean = mean(amplitude, na.rm = TRUE),
+    sd = sd(amplitude, na.rm = TRUE))%>%
+  kable(digits = 3)
+
+#for computing 95 CI
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "fast" 
+                                     & file_ERP_long$feedback == "early")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "fast" 
+                                     & file_ERP_long$feedback == "late")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "medium" 
+                                     & file_ERP_long$feedback == "early")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "medium" 
+                                     & file_ERP_long$feedback == "late")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "slow" 
+                                     & file_ERP_long$feedback == "early")],mu=0)
+t.test(file_ERP_long$amplitude[which(file_ERP_long$tempo == "slow" 
+                                     & file_ERP_long$feedback == "late")],mu=0)
+
+```
+
+## traditional ERP
+```{r}
+file_traditional_ERP_long%>%
+  pairwise_t_test(amplitude ~ tempo, paired = TRUE,var.equal=FALSE,detailed = TRUE,
+  p.adjust.method = "bonferroni")%>%
+  kable(digits = 3)
+
+aov01 <- aov_car(amplitude ~ tempo * feedback + Error(participant_ID/(tempo * feedback)), file_traditional_ERP_long,es = "pes")
+summary(aov01)
+lsmeans(aov01,pairwise ~ feedback | tempo ,adjust="Bonferroni")$contrasts
+
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "fast")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "medium")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "slow")],mu=0)
+
+effectsize::cohens_d(Pair(amplitude[tempo == "slow"], amplitude[tempo == "fast"])~1, 
+                     data = file_traditional_ERP_long)
+effectsize::cohens_d(Pair(amplitude[tempo == "slow"], amplitude[tempo == "medium"])~1, 
+                     data = file_traditional_ERP_long)
+effectsize::cohens_d(Pair(amplitude[tempo == "medium"], amplitude[tempo == "fast"])~1, 
+                     data = file_traditional_ERP_long)
+effectsize::cohens_d(Pair(amplitude[tempo == "medium" & feedback == "early"], amplitude[tempo == "medium" & feedback == "late"])~1, 
+                     data = file_traditional_ERP_long)
+
+# cohen's d 
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "early" 
+                                                   & file_traditional_ERP_long$tempo == "fast")],mu=0)
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "late" 
+                                                   & file_traditional_ERP_long$tempo == "fast")],mu=0)
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "early" 
+                                                   & file_traditional_ERP_long$tempo == "medium")],mu=0)
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "late" 
+                                                   & file_traditional_ERP_long$tempo == "medium")],mu=0)
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "early" 
+                                                   & file_traditional_ERP_long$tempo == "slow")],mu=0)
+cohens_d(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$feedback == "late" 
+                                                   & file_traditional_ERP_long$tempo == "slow")],mu=0)
+
+file_traditional_ERP_long%>%
+  group_by(tempo, feedback) %>%
+  summarise(count = n(),
+    mean = mean(amplitude, na.rm = TRUE),
+    sd = sd(amplitude, na.rm = TRUE))%>%
+  kable(digits = 3)
+
+#for computing 95 CI
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "fast" 
+                                                 & file_traditional_ERP_long$feedback == "early")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "fast" 
+                                                 & file_traditional_ERP_long$feedback == "late")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "medium" 
+                                                 & file_traditional_ERP_long$feedback == "early")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "medium" 
+                                                 & file_traditional_ERP_long$feedback == "late")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "slow" 
+                                                 & file_traditional_ERP_long$feedback == "early")],mu=0)
+t.test(file_traditional_ERP_long$amplitude[which(file_traditional_ERP_long$tempo == "slow" 
+                                                 & file_traditional_ERP_long$feedback == "late")],mu=0)
+
+```
+
+#description of feedback types counts
+
+```{r}
+count(file_tbt%>%
+  group_by(tempo),feedback)%>%
+  group_by(tempo)%>%
+  mutate(sum = sum(n))%>%
+  mutate(percent = n/sum
+         )%>%
+  select(-sum)%>%
+  kable(digits = 3)
+
+count(file_tbt%>%
+  group_by(tempo,participant_ID),feedback)%>%
+  group_by(tempo,participant_ID)%>%
+  mutate(sum = sum(n))%>%
+  mutate(percent = n/sum)%>%
+  select(-sum,-n)%>%
+  group_by(feedback, tempo)%>%
+  summarise(mean_percent = mean(percent),
+            se_percent = sd(percent)/sqrt(20),
+            lower = mean_percent - 1.96 * se_percent,
+            upper = mean_percent + 1.96 * se_percent)%>%
+  kable(digits = 3)
+```
+
+# Behavioural analysis
+
+## RT simulation
+```{r}
+actualMean = c(0.402, 0.570, 0.933)
+actualSD = c(0.014, 0.02, 0.037)
+RTsim <- matrix(data = NA, nrow = 1728, ncol = 3)
+
+for (i in 1:3){
+  RTsim[,i] <- rnorm(1728,actualMean[i],actualSD[i])
+}
+
+RTsim <- as.data.frame(RTsim)
+
+names(RTsim) = c("fast","medium","slow")
+
+RTsim <- RTsim%>%
+  pivot_longer(fast:slow,names_to = "tempo", values_to = "rt")%>%
+  group_by(tempo)%>%
+  mutate(RT_adjust = rt - lag(rt))%>%
+  mutate(target_interval = ifelse(tempo == "fast",0.4,
+                                  ifelse(tempo == "medium",0.6,
+                                         ifelse(tempo == "slow",1))),
+         rt_mean10 = rollmean(rt, k = 10, fill = NA, align = "right"),
+         rt_deviance_mean10 = ifelse(!is.na(rt_mean10),rt - rt_mean10,
+                                     rt - target_interval),
+         last_rt_deviance_mean10 = lag(rt_deviance_mean10,1))
+
+```
+
+
+## examine distribution density
+```{r Reaction time}
+sum_rt <- file_tbt%>%
+  group_by(tempo)%>%
+  summarise(rt = mean(trialResp_rt,na.rm = TRUE),
+            se = sd(trialResp_rt,na.rm = TRUE)/sqrt(20))
+
+sum_rt2 <- file_tbt%>%
+  group_by(tempo,participant_ID)%>%
+  summarise(rt = mean(trialResp_rt,na.rm = TRUE))
+
+p2a <- ggdensity(file_tbt, x = "trialResp_rt", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo",
+   ggtheme = theme_classic())+
+  scale_color_manual(values = greys_palette3)+
+  scale_fill_manual(values = greys_palette3)+
+  geom_vline(xintercept  = 0.4)+
+  geom_vline(xintercept  = 0.6)+
+  geom_vline(xintercept  = 1.0)+
+  labs(x = 'Response Time (s)',
+       y = 'density')+
+  theme(legend.position = "top")
+
+p2b <- ggplot(sum_rt2,aes(x=tempo, y=rt, color=tempo)) +
+  geom_hline(yintercept = 0.4, color = "grey")+
+  geom_hline(yintercept = 0.6, color = "grey")+
+  geom_hline(yintercept = 1.0, color = "grey")+
+  geom_violin()+ 
+  theme(legend.position = "none")+
+  geom_boxplot(width = 0.2)+
+  geom_jitter(size = 0.5)+
+  scale_color_manual(values = greys_palette3)+
+  labs(y = "mean RT by subject (s)")
+
+p2c <- ggdensity(file_tbt, x = "rt_adjustment", rug = TRUE,add = 'median',
+   color = "feedback", fill = "feedback",facet.by = "tempo",
+   font.label = list(size = 6))+
+  scale_color_manual(values = purpleOrange_palette3)+
+  scale_fill_manual(values = purpleOrange_palette3)+
+  theme(
+        legend.position = "top")+
+  labs(x = "RT adjustment (s) \
+  (this RT - last RT)")+
+  scale_x_continuous(breaks = c(-0.2,0,0.2))
+```
+
+```{r}
+t.test(sum_rt2$rt[which(sum_rt2$tempo == "fast")],mu = 0.4)
+sd(sum_rt2$rt[which(sum_rt2$tempo == "fast")])
+mean(sum_rt2$rt[which(sum_rt2$tempo == "fast")])
+cohens_d(sum_rt2$rt[which(sum_rt2$tempo == "fast")],mu = 0.4)
+
+t.test(sum_rt2$rt[which(sum_rt2$tempo == "medium")],mu = 0.6)
+sd(sum_rt2$rt[which(sum_rt2$tempo == "medium")])
+mean(sum_rt2$rt[which(sum_rt2$tempo == "medium")])
+cohens_d(sum_rt2$rt[which(sum_rt2$tempo == "medium")],mu = 0.6)
+
+t.test(sum_rt2$rt[which(sum_rt2$tempo == "slow")],mu = 1)
+sd(sum_rt2$rt[which(sum_rt2$tempo == "slow")])
+mean(sum_rt2$rt[which(sum_rt2$tempo == "slow")])
+cohens_d(sum_rt2$rt[which(sum_rt2$tempo == "slow")],mu = 1)
+```
+
+
+*Conclusion: participants drum faster in the medium and slow condition.*
+
+
+```{r RT adjustment}
+rtAdj_adjustment <- file_tbt%>%
+  group_by(participant_ID,feedback, tempo)%>%
+  summarise(rt_adjustment = mean(rt_adjustment,na.rm = TRUE))
+
+levels(rtAdj_adjustment$feedback) <- c("early","on_time","late")
+```
+
+## is rt a person-level trait?
+```{r}
+rt_wide <- sum_rt2%>%
+  pivot_wider(names_from = c("tempo"), values_from = "rt")%>%
+  ungroup()%>%
+  select(-participant_ID)
+
+corrmat <- cor(rt_wide, method = "pearson", use = "complete.obs")
+ggcorrplot(corrmat, type = "lower", insig = "blank")
+```
+
+## examine RT adjustment in on-time condition
+```{r}
+aov1 <- aov_car(rt_adjustment ~ tempo * feedback + Error(participant_ID/(tempo * feedback)), rtAdj_adjustment)
+summary(aov1)
+
+effectsize::eta_squared(aov1, partial = TRUE)
+
+lsmeans(aov1,pairwise ~ tempo | feedback,adjust="Bonferroni")$contrasts
+lsmeans(aov1,pairwise ~ tempo | feedback,adjust="Bonferroni")$lsmeans
+effectsize::cohens_d(rtAdj_adjustment$rt_adjustment[rtAdj_adjustment$feedback == "on_time" & rtAdj_adjustment$tempo == "fast"],rtAdj_adjustment$rt_adjustment[rtAdj_adjustment$feedback == "on_time" & rtAdj_adjustment$tempo == "slow"],paired = TRUE)
+
+p2d <- ggplot(rtAdj_adjustment, aes(x=feedback, y=rt_adjustment, color=feedback)) +
+  geom_hline(yintercept = 0, color = "grey")+
+  geom_violin()+ 
+  geom_boxplot(width = 0.2)+
+  geom_jitter(size = 0.5)+
+  labs(y= "Mean RT adjustment by subject (s)")+
+  facet_wrap(~tempo)+
+  theme(legend.position = "none")+
+  scale_color_manual(values = purpleOrange_palette3)+
+  scale_x_discrete(limits = c("early","on_time","late"))
+```
+
+```{r}
+design <- c(
+  area(1,1,1,2),
+  area(1,3,1,4),
+  area(2,1,2,4),
+  area(3,1,3,4)
+)
+
+(p2a+ p2b+ p2c+ p2d)+
+  plot_layout(design = design)+ 
+  plot_annotation(tag_levels = 'A')
+
+ggsave('../figures/fig2.png',width = 8, height = 10, units = "in",dpi = 300)
+```
+
+```{r}
+file_tbt%>%
+  group_by(tempo,feedback)%>%
+  summarise(trialResp_rt = mean(trialResp_rt, na.rm = TRUE))%>%
+  kable(digits = 3)
+```
+
+# trial-by-trial EEG predicting RT adjustments (main results)
+```{r}
+file_tbt$feedback <- factor(file_tbt$feedback, levels = c("on_time","early","late"))
+file_tbt$tempo <- factor(file_tbt$tempo, levels = c("slow","medium","fast"))
+
+lm1 <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10 * tempo +(1|participant_ID), data= file_tbt)
+
+summary_lm1 <- summary(lm1)
+summary_lm1
+
+lme.dscore(lm1,file_tbt,type = "lme4")
+round(summary_lm1$coefficients,4)
+write_csv(as.data.frame(summary_lm1$coefficients),paste0("data_files/lm1_",window_type,".csv"))
+
+effectsize::eta_squared(lm1, partial = TRUE)
+```
+
+```{r include = FALSE}
+tab_model(lm1,digits = 5,file = "data_files/table.html")
+```
+
+## same regression model without control variables
+```{r}
+lm1_ <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + (1|participant_ID), data= file_tbt)
+summary(lm1_)
+effectsize::eta_squared(lm1_, partial = TRUE)
+lme.dscore(lm1_,file_tbt,type = "lme4")
+```
+
+## some additional analysis about the auto-correlation among RTs and ERPs
+```{r}
+lm2 <- lmer(rERPRewp ~ last_RewP + (1|participant_ID),data = file_tbt)
+summary(lm2)
+lme.dscore(lm2,file_tbt,type = "lme4")
+
+lm3 <- lmer(rt_adjustment ~ last_rt_adjustment + (1|participant_ID),data = file_tbt)
+summary(lm3)
+lme.dscore(lm3,file_tbt,type = "lme4")
+
+lm4 <- lmer(scale(rERPRewp) ~ scale(erpRewp) + (1|participant_ID),data = file_tbt)
+summary(lm4)
+lme.dscore(lm4,file_tbt,type = "lme4")
+```
+
+## ensure it's not an artefact
+Rationale: neural activity should predict RT adjustment, but the neural activity in the next trial shouldn't. (lag =1)
+```{r}
+file_tbt_temp <- file_tbt%>%filter(last_rt_adjustment >= rtAdj_outlier[1] & last_rt_adjustment <= rtAdj_outlier[2])
+
+p1<- ggdensity(file_tbt_temp, x = "rt_adjustment", rug = TRUE,add = 'median',
+   color = "feedback", fill = "feedback")+
+  scale_color_brewer(palette="Set1")+
+  scale_fill_brewer(palette="Set1")
+p2 <- ggdensity(file_tbt_temp, x = "last_rt_adjustment", rug = TRUE,add = 'median',
+   color = "feedback", fill = "feedback")+
+  scale_color_brewer(palette="Set1")+
+  scale_fill_brewer(palette="Set1")
+
+p1+p2
+
+#Indeed, we saw that RT adjustment responds to, rather than precedes, feedback.
+lm1_temp <- lmer(last_rt_adjustment ~ rERPRewp * tempo * last_feedback + last_chunk_location + last_last_rt_deviance_mean10 * tempo + (1|participant_ID), data= file_tbt_temp)
+summary(lm1_temp)
+```
+
+## examine this in traditional ERP
+```{r traditional ERP for comparison, echo = FALSE}
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "medium")
+lm1_traditional <- lmer(rt_adjustment ~ erpRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10* tempo + (1|participant_ID), data= file_tbt)
+summary(lm1_traditional)
+lme.dscore(lm1_traditional,file_tbt,type = "lme4")
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "fast")
+lm1_traditional <- lmer(rt_adjustment ~ erpRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10* tempo + (1|participant_ID), data= file_tbt)
+summary(lm1_traditional)
+lme.dscore(lm1_traditional,file_tbt,type = "lme4")
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "slow")
+lm1_traditional <- lmer(rt_adjustment ~ erpRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10* tempo + (1|participant_ID), data= file_tbt)
+summary(lm1_traditional)
+lme.dscore(lm1_traditional,file_tbt,type = "lme4")
+
+effectsize::eta_squared(lm1_traditional, partial = TRUE)
+
+tab_model(lm1_traditional,digits = 5,file = "data_files/table_traditional.html")
+
+fig4b_traditional <- plot_model(lm1_traditional,type = "pred",terms = c("erpRewp","feedback"),colors = c("gold","purple4","plum3"))+
+  labs(title = "slow tempo",
+       y = "RT adjustment (s)",
+       x = "RewP (traditional)")
+```
+
+*Conclusion: moderate evidence that more positive trial-by-trial rERP predicts slowing of RT in the next trial. This may also apply to traditional ERP.*
+
+## for rERP, relevel to medium-ontime and fast-ontime
+```{r}
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "medium")
+lm1_medium <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_medium)
+lme.dscore(lm1_medium,file_tbt,type = "lme4")
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "fast")
+lm1_fast <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_fast)
+lme.dscore(lm1_fast,file_tbt,type = "lme4")
+```
+
+## for rERP,relevel to slow-late etc.
+
+```{r}
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "slow")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "late")
+lm1_slow_late <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_slow_late)$coef[2,]
+effectsize::eta_squared(lm1_slow_late, partial = TRUE)
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "slow")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "early")
+lm1_slow_early <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_slow_early)$coef[2,]
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "medium")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "late")
+lm1_medium_late <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_medium_late)$coef[2,]
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "medium")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "early")
+lm1_medium_early <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_medium_early)$coef[2,]
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "fast")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "late")
+lm1_fast_late <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_fast_late)$coef[2,]
+
+file_tbt$tempo <- relevel(file_tbt$tempo, ref = "fast")
+file_tbt$feedback <- relevel(file_tbt$feedback, ref = "early")
+lm1_fast_early <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + scale(last_rt_deviance_mean10)* tempo +(1|participant_ID), data= file_tbt)
+summary(lm1_fast_early)$coef[2,]
+```
+
+<!-- # Bayesian regression -->
+<!-- ```{r} -->
+<!-- file_tbt$tempo <- factor(file_tbt$tempo,levels = c("slow","medium","fast")) -->
+<!-- file_tbt$feedback <- factor(file_tbt$feedback,levels = c("on_time","early","late")) -->
+
+<!-- m_bayes_lm1 <- brm(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10*tempo + (1|participant_ID), -->
+<!--                data = file_tbt, -->
+<!--                seed = 123, -->
+<!--                save_all_pars = T, -->
+<!--                file="m_bayes_lm1.rds", -->
+<!--                iter = 1000, warmup = 500, chains = 4, cores = 4, -->
+<!--               control = list(adapt_delta = 0.99)) -->
+
+<!-- posterior_summary(m_bayes_lm1) -->
+<!-- p_map(m_bayes_lm1) -->
+<!-- ``` -->
+
+# individual regression coefficients
+## estimate individual regression coefficients (this takes several hours)
+```{r eval=FALSE}
+set.seed(2046)
+lm1_individual <- lmer(rt_adjustment ~ last_rt_deviance_mean10 * tempo + chunk_location + (rERPRewp * tempo * feedback|participant_ID), data= file_tbt)
+anova(lm1,lm1_individual)
+#
+write_csv(coef(lm1_individual)$participant_ID, 'data_files/individual_coefficients_lm1.csv')
+summary(lm1_individual)
+```
+
+## read in individual coefficients
+
+```{r}
+ind_coef <- read_csv('data_files/individual_coefficients_lm1.csv')
+
+ggplot(ind_coef,aes(x = 1, y = `rERPRewp`))+
+  geom_violin()+
+  geom_jitter()+
+  ylim(-0.0002,0.002)+
+  geom_hline(yintercept = 0, color = "grey",linetype = "dashed")+
+  geom_hline(yintercept = summary_lm1$coefficients[2], color = "red", linetype = "dashed")+
+  labs(title = "individual coefficients of rERP predicting RT adjustment")+
+  stat_summary(aes(group = 1),color = "blue")
+
+t.test(ind_coef$`rERPRewp`, mu = 0)
+effectsize::cohens_d(ind_coef$`rERPRewp`, mu = 0)
+sd(ind_coef$`rERPRewp`)
+min(ind_coef$`rERPRewp`)
+max(ind_coef$`rERPRewp`)
+```
+
+## plot individual slopes
+```{r}
+df_out <- {}
+for (i in unique(file_tbt$participant_ID)){
+  lm_temp <- lm(rt_adjustment ~  rERPRewp * tempo * feedback + 
+                  last_rt_deviance_mean10 * tempo + chunk_location, 
+                data= file_tbt%>%
+               filter(participant_ID == i))
+  summary(lm_temp)
+  r <- range(file_tbt[file_tbt$"participant_ID" == i,"rERPRewp"])
+  df_temp <- as.data.frame(ggpredict(model = lm_temp,terms = c(
+          paste0("rERPRewp","[",round(r[1],2),":",round(r[2],2),"10]"),
+          "tempo","feedback[on_time]")))%>%
+    rowwise()%>%
+    mutate(subj = i,
+           coef = ifelse(group == "slow",
+                         summary(lm_temp)$coefficients[2,1],
+                         ifelse(group == "medium",
+                         summary(lm(rt_adjustment ~  rERPRewp * tempo * feedback + 
+                                      last_rt_deviance_mean10 * tempo + chunk_location, data= file_tbt%>%
+                                      filter(participant_ID == i)%>%
+                                      mutate(tempo =
+                                               relevel(tempo, ref = "medium"
+                                                       ))))$coefficients[2,1],
+                         ifelse(group == "fast",
+                         summary(lm(rt_adjustment ~  rERPRewp * tempo * feedback + 
+                                      last_rt_deviance_mean10 * tempo + chunk_location, 
+                                    data= file_tbt%>%
+                                      filter(participant_ID == i)%>%
+                                      mutate(tempo =
+                                               relevel(tempo, ref = "fast"
+                                                       ))))$coefficients[2,1],NA))))%>%
+    relocate(subj)
+  df_out <- rbind(df_out,df_temp)
+}
+
+# unique(df_out%>%
+#          select(subj,group,coef))
+
+df_out$subj <- as.factor(df_out$subj)
+
+r <- range(file_tbt[,"rERPRewp"])
+df_summary <- as.data.frame(ggpredict(model = lm1,terms = c(
+          paste0("rERPRewp","[",round(r[1],2),":",round(r[2],2),"10]"),
+          "tempo","feedback[on_time]")))%>%
+    rowwise()%>%
+    mutate(coef = ifelse(group == "slow",
+                         summary(lm1)$coefficients[2,1],
+                         ifelse(group == "medium",
+                         summary(lmer(rt_adjustment ~  rERPRewp * tempo * feedback 
+                                      + last_rt_deviance_mean10 * tempo + chunk_location + (1 | participant_ID), 
+                                      data= file_tbt%>%
+                                      mutate(tempo =
+                                               relevel(tempo, ref = "medium"
+                                                       ))))$coefficients[2,1],
+                         ifelse(group == "fast",
+                         summary(lmer(rt_adjustment ~  rERPRewp * tempo * feedback + last_rt_deviance_mean10 * tempo + chunk_location + (1 | participant_ID), 
+                                      data= file_tbt%>%
+                                      mutate(tempo =
+                                               relevel(tempo, ref = "fast"
+                                                       ))))$coefficients[2,1],NA))))
+  
+ggplot(data = df_out)+
+  geom_hline(yintercept = 0)+
+  geom_line(aes(x = x, y = predicted, color = subj, 
+                linetype = as.factor(coef < 0)), size = 0.7,
+            alpha = 0.7)+
+  facet_wrap(~ group + facet)+
+  geom_line(data = df_summary,aes(x = x, y = predicted), size = 1.2,
+             color = "red")+
+  theme(legend.position = "right")+
+  scale_color_viridis_d(guide = 'none')+
+  labs(x = "RewP", y = "RT adjustment (s)",
+       linetype = "slope < 0")
+
+ggsave('../figures/SI_fig5.png',width = 8, height = 4, units = "in",dpi = 300)
+```
+
+# make figures
+```{r include = FALSE}
+file_tbt$tempo <- factor(file_tbt$tempo,levels = c("slow","medium","fast"))
+file_tbt$feedback <- factor(file_tbt$feedback,levels = c("on_time","early","late"))
+
+RTsim$tempo <- factor(RTsim$tempo, levels = c("slow","medium","fast"))
+
+summary(lm(last_rt_deviance_mean10~RT_adjust, RTsim))
+lm.beta::lm.beta(lm(last_rt_deviance_mean10~RT_adjust, RTsim))
+fig3a <- ggplot(data = RTsim, aes(x = last_rt_deviance_mean10, 
+                                  y = RT_adjust, color = tempo))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  scale_color_manual(values = rev(greys_palette3))+
+  labs(title = "Simulated RT adjustment from \
+       Mean and SD",
+       y = "RT adjustment (s)",
+       x = "RT deviance from local mean (s)")+
+  geom_segment(x = -1, xend=0.05, y = 0, yend = 0, 
+               color = "red",linetype = "dashed")+
+  geom_segment(x = 0, xend=0, y = -1, yend = 0.05, 
+               color = "red",linetype = "dashed")+
+  geom_segment(x = 1, xend= -1, y = -1, yend = 1, 
+               color = "grey",linetype = "dashed")+
+  scale_x_continuous(limits = c(-0.17,0.17))+
+  scale_y_continuous(limits = c(-0.17,0.17))
+
+fig3b <-plot_model(lm1,type = "pred",terms = c("last_rt_deviance_mean10","tempo"),colors = rev(greys_palette3))+
+  geom_segment(x = -1, xend=1, y = 1, yend = -1, 
+               color = "grey",linetype = "dashed")+
+  geom_segment(x = -1, xend=0.05, y = 0, yend = 0, 
+               color = "red",linetype = "dashed")+
+  geom_segment(x = 0, xend=0, y = -1, yend = 0.05, 
+               color = "red",linetype = "dashed")+
+  labs(title = "",
+       y = "RT adjustment (s)",
+       x = "RT deviance from local mean (s)")+
+  scale_x_continuous(limits = c(-0.5, 0.5))+
+  scale_y_continuous(limits = c(-0.5, 0.5))
+
+# fig4b <- plot_model(lm1,type = "pred",terms = c("tempo","feedback"), colors = c("gold","purple4","plum3")) +
+#   labs(title = "",y = "RT adjustment (s)")+
+#   geom_hline(yintercept = 0, color = "grey",linetype = "dashed")
+
+fig3c <- plot_model(lm1,type = "pred",terms = c("chunk_location","tempo"),colors = rev(greys_palette3))+
+  annotation_custom(grid.text("Pattern B aaabaa", 
+                              x=0.6,  y=0.8, gp=gpar(col="black", fontsize=10)))+
+  annotation_custom(grid.text("Pattern A aaba", 
+                              x=0.1,  y=0.8, gp=gpar(col="black", fontsize=10)))+
+  labs(title = "",
+       y = "RT adjustment (s)")+
+  ylim(-0.025,0.028)+
+  geom_hline(yintercept = 0, color = "grey",linetype = "dashed")+
+  geom_vline(xintercept = 4.5, color = "black", linewidth = 0.2)+
+  geom_segment(x = 3, xend = 3, y = 0.025, yend = 0.021, 
+               color = "red",arrow = arrow(length = unit(0.03, "npc")))+
+  geom_segment(x = 4, xend = 4, y = 0.025, yend = 0.021, 
+               color = "red",arrow = arrow(length = unit(0.03, "npc")))+
+  geom_segment(x = 8, xend = 8, y = 0.025, yend = 0.021, 
+               color = "red",arrow = arrow(length = unit(0.03, "npc")))+
+  geom_segment(x = 9, xend = 9, y = 0.025, yend = 0.021, 
+               color = "red",arrow = arrow(length = unit(0.03, "npc")))+
+  annotation_custom(grid.text("Hand switch", 
+                              x=0.3,  y=0.95, gp=gpar(col="red", fontsize=10)))
+
+fig3d <- plot_model(lm1,type = "pred",terms = c("rERPRewp","tempo","feedback"),colors = rev(greys_palette3))+
+  labs(title = "",
+       x = "trial RewP (uV)",
+       y = "RT adjustment (s)")+
+  geom_hline(yintercept = 0, color = "grey",linetype = "dashed")
+
+design <- c(
+  area(1,1),
+  area(1,2),
+  area(2,1,2,2),
+  area(3,1,3,2)
+)
+
+fig3a+fig3b+fig3c+fig3d+
+  plot_layout(design = design)+ 
+  plot_annotation(tag_levels = 'A')
+
+ggsave('../figures/SI_fig3.png',width = 8, height = 10, units = "in",dpi = 300)
+```
+
+
+```{r}
+#divide the range of RewP into 10 portions
+bin_num = 10
+
+bins <- quantile(file_tbt$rERPRewp, seq(0,1,by = (1/bin_num)))
+
+for (i in 1:bin_num){
+  bin_range_min = bins[i]
+  bin_range_max = bins[i+1]
+
+  if (i <= (bin_num-1)){
+    file_tbt$RewP_bin[file_tbt$rERPRewp >= bin_range_min &  file_tbt$rERPRewp < bin_range_max] <- i
+  } else {
+    file_tbt$RewP_bin[file_tbt$rERPRewp >= bin_range_min &  file_tbt$rERPRewp <= bin_range_max] <- i
+  }
+}
+
+file_tbt_binned <- file_tbt%>%
+  filter(feedback == "on_time")%>%
+  group_by(RewP_bin, tempo,feedback)%>%
+  summarise(mean_rt_adjustment = mean(rt_adjustment,na.rm = TRUE),
+            se_rt_adjustment = sd(rt_adjustment,na.rm = TRUE)/sqrt(n()),
+            trial_number = n())
+
+file_tbt_binned_ind <- file_tbt%>%
+    filter(feedback == "on_time")%>%
+  group_by(RewP_bin,participant_ID,tempo,feedback)%>%
+  summarise(mean_rt_adjustment = mean(rt_adjustment,na.rm = TRUE),
+            se_rt_adjustment = sd(rt_adjustment,na.rm = TRUE)/sqrt(n()),
+            trial_number = n(),
+            point_size_scaled = trial_number/20)
+
+file_tbt_binned$RewP_bin <- as.numeric(file_tbt_binned$RewP_bin)
+
+file_tbt_binned_ind$RewP_bin <- as.numeric(file_tbt_binned_ind$RewP_bin)
+
+
+fig4a <- ggplot()+
+  geom_density(data = file_tbt, aes(x = rERPRewp, y = stat(density)))+
+  labs(x = "RewP (uV)")+
+  geom_vline(xintercept = mydf[1,2:length(mydf)], color = "grey", linetype = "dashed")+
+  geom_text(aes(x = mydf[1,2:length(mydf)]+1, y = 0.005, label =1:bin_num))
+
+fig4c <- plot_model(lm1,type = "pred",terms = c("rERPRewp","feedback"),colors = c("gold","purple4","plum3"))+
+  labs(title = "slow tempo",
+       y = "RT adjustment (s)")
+
+fig4d <- ggplot(ind_coef,aes(x = 1, y = `rERPRewp`))+
+  geom_violin(width = 0.2)+
+  geom_jitter(shape = 1,width = 0.1)+
+  geom_hline(yintercept = 0, color = "black")+
+  geom_hline(yintercept = summary(lm1)$coefficients[2], color = "red")+
+  labs(title = "Slow tempo",
+       y = "individual coefficients", x = "")+
+  stat_summary(aes(group = 1),color = "black")+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())
+
+fig4b <- ggplot(file_tbt_binned,aes(x = RewP_bin, y = mean_rt_adjustment))+
+  geom_point(data = file_tbt_binned_ind, aes(x = RewP_bin, y = mean_rt_adjustment, size = trial_number), color = "lightgrey", alpha = 0.4)+
+  geom_errorbar(data = file_tbt_binned_ind,aes(ymin = mean_rt_adjustment-se_rt_adjustment, ymax = mean_rt_adjustment+se_rt_adjustment), width = 0.2,color = "lightgrey", alpha = 0.4)+
+  geom_smooth(aes(color = tempo, fill = tempo), method = "lm", alpha = 0.3)+
+  geom_point()+
+  geom_errorbar(aes(ymin = mean_rt_adjustment-se_rt_adjustment, ymax = mean_rt_adjustment+se_rt_adjustment), color = "black", width = 0.2,)+
+  scale_color_manual(values = rev(greys_palette3))+
+  scale_fill_manual(values = rev(greys_palette3))+
+  geom_hline(yintercept = 0)+
+  facet_wrap(~tempo)+
+  labs(title = "RT adjustment following on-time feedback",
+       size = "number of trials",
+       y = "RT adjustment",
+       x = "RewP in 10% bins")+
+  scale_x_continuous(breaks = 1:bin_num)+
+  scale_size(breaks = c(10,20,30))
+
+mydf <- t(as.data.frame(round(bins,1)))
+
+
+design <- c(
+  area(1,1,1,3),
+  area(2,1,5,3),
+  area(6,1,7,2),
+  area(6,3,7,3))
+
+fig4a+
+fig4b+
+fig4c+
+fig4d+
+  plot_layout(design = design)+ 
+  plot_annotation(tag_levels = 'A')
+
+ggsave('../figures/fig4.png',width = 7, height = 8, units = "in",dpi = 300)
+```
+
+```{r}
+#divide the range of RewP into 10 portions
+bin_num = 10
+
+bins <- quantile(file_tbt$erpRewp, seq(0,1,by = (1/bin_num)))
+
+for (i in 1:bin_num){
+  bin_range_min = bins[i]
+  bin_range_max = bins[i+1]
+
+  if (i <= (bin_num-1)){
+    file_tbt$RewP_bin[file_tbt$erpRewp >= bin_range_min &  file_tbt$erpRewp < bin_range_max] <- i
+  } else {
+    file_tbt$RewP_bin[file_tbt$erpRewp >= bin_range_min &  file_tbt$erpRewp <= bin_range_max] <- i
+  }
+}
+
+file_tbt_binned <- file_tbt%>%
+  filter(feedback == "on_time")%>%
+  group_by(RewP_bin, tempo,feedback)%>%
+  summarise(mean_rt_adjustment = mean(rt_adjustment,na.rm = TRUE),
+            se_rt_adjustment = sd(rt_adjustment,na.rm = TRUE)/sqrt(n()),
+            trial_number = n())
+
+file_tbt_binned_ind <- file_tbt%>%
+    filter(feedback == "on_time")%>%
+  group_by(RewP_bin,participant_ID,tempo,feedback)%>%
+  summarise(mean_rt_adjustment = mean(rt_adjustment,na.rm = TRUE),
+            se_rt_adjustment = sd(rt_adjustment,na.rm = TRUE)/sqrt(n()),
+            trial_number = n(),
+            point_size_scaled = trial_number/20)
+
+file_tbt_binned$RewP_bin <- as.numeric(file_tbt_binned$RewP_bin)
+
+file_tbt_binned_ind$RewP_bin <- as.numeric(file_tbt_binned_ind$RewP_bin)
+
+fig4c_traditional <- ggplot(file_tbt_binned,aes(x = RewP_bin, y = mean_rt_adjustment))+
+  geom_point(data = file_tbt_binned_ind, aes(x = RewP_bin, y = mean_rt_adjustment, size = trial_number), color = "lightgrey", alpha = 0.4)+
+  geom_errorbar(data = file_tbt_binned_ind,aes(ymin = mean_rt_adjustment-se_rt_adjustment, ymax = mean_rt_adjustment+se_rt_adjustment), width = 0.2,color = "lightgrey", alpha = 0.4)+
+  geom_smooth(aes(color = tempo, fill = tempo), method = "lm", alpha = 0.3)+
+  geom_point()+
+  geom_errorbar(aes(ymin = mean_rt_adjustment-se_rt_adjustment, ymax = mean_rt_adjustment+se_rt_adjustment), color = "black", width = 0.2,)+
+  scale_color_manual(values = rev(greys_palette3))+
+  scale_fill_manual(values = rev(greys_palette3))+
+  geom_hline(yintercept = 0)+
+  facet_wrap(~tempo)+
+  labs(title = "RT adjustment following on-time feedback",
+       size = "number of trials",
+       y = "RT adjustment",
+       x = "RewP in 10% bins")+
+  scale_x_continuous(breaks = 1:bin_num)
+
+mydf <- t(as.data.frame(round(bins,1)))
+
+fig4a_traditional <- ggplot()+
+  geom_density(data = file_tbt, aes(x = erpRewp, y = stat(density)))+
+  labs(x = "RewP (uV)")+
+  geom_vline(xintercept = mydf[1,2:length(mydf)], color = "grey", linetype = "dashed")+
+  geom_text(aes(x = mydf[1,2:length(mydf)]+1, y = 0.005, label =1:bin_num))
+
+design <- c(
+  area(1,1,1,2),
+  area(1,3,1,3),
+  area(2,1,4,3))
+
+fig4a_traditional+
+fig4b_traditional+
+fig4c_traditional+
+  plot_layout(design = design)+ 
+  plot_annotation(tag_levels = 'A')
+
+ggsave('../figures/SI_fig4.png',width = 8, height = 8, units = "in",dpi = 300)
+```
+

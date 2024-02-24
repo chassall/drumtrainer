@@ -1,0 +1,107 @@
+---
+title: "analysis_16_margin"
+author: "Ryan Yan"
+date: "2024-02-20"
+output: html_document
+---
+
+```{r}
+subjects <- c(paste0("sub-0",1:9),paste0("sub-",10:21))
+subjects <- subjects[c(1:11,13:20)]
+all_tsv <- NULL
+
+for (s in subjects){
+  temp_tsv <- readr::read_tsv(paste0(dataset_path,s,"/beh/",s,"_task-drumtrainer_beh.tsv")) %>% 
+    mutate(subject = s) %>% 
+    relocate(subject) %>% 
+    filter(blockLoop_thisRepN < 24)
+  
+  all_tsv <- rbind(all_tsv,temp_tsv)
+}
+
+write_csv(all_tsv,"data_files/beh.csv")
+
+# add in text variables of tempo and outcome
+all_tsv$tempo <- NA
+all_tsv$tempo[which(all_tsv$blockType <= 4)] <- "fast"
+all_tsv$tempo[which(all_tsv$blockType >=9)] <- "slow"
+all_tsv$tempo[which(all_tsv$blockType >= 5 & all_tsv$blockType <= 8)] <- "medium"
+
+all_tsv <- all_tsv %>% 
+  rename(trial = trialLoop_thisRepN) %>% 
+  group_by(subject) %>% 
+  mutate(trial_total = row_number()) %>% 
+  group_by(tempo, subject, trial) %>% 
+  mutate(block_in_tempo = row_number())
+```
+
+```{r}
+margin_summary_subj1 <- all_tsv %>% 
+  group_by(subject) %>% 
+  group_by(tempo, subject, trial) %>% 
+  summarise(margin = mean(margin, na.rm = T))
+
+margin_summary1 <- all_tsv %>% 
+  group_by(tempo, subject, trial) %>% 
+  summarise(margin = mean(margin, na.rm = T)) %>% 
+  group_by(tempo, trial) %>% 
+  summarise(mean = mean(margin, na.rm = T),
+            se = sd(margin, na.rm = T)/n())
+
+p1 <- ggplot()+
+  geom_line(data = margin_summary_subj1, aes(x = trial, y = margin, group = subject),
+            color = "grey", alpha = 0.4)+
+  geom_line(data = margin_summary1, aes(x = trial, y = mean, color = tempo),
+            size = 1)+
+  geom_ribbon(data = margin_summary1, aes(x = trial, ymin = mean-se, ymax = mean+se,
+                                          fill = tempo),
+              alpha = 0.4)+
+  facet_wrap(~tempo)+
+  scale_color_manual(values = greys_palette3)+
+  scale_fill_manual(values = greys_palette3)+
+  labs(x = "trial in block",
+       y = "margin (sec)",
+       title = "mean margin change trajectory - all blocks")+
+  ylim(0,0.25)
+```
+```{r}
+margin_summary_subj2 <- all_tsv %>% 
+  group_by(subject) %>% 
+  filter(trial == 71) %>% 
+  mutate(block_div = ifelse(block_in_tempo > 4, 2, 1)) %>% 
+  group_by(tempo, subject, block_div) %>% 
+  summarise(margin = mean(margin, na.rm = T))
+
+margin_summary2 <- all_tsv %>% 
+  filter(trial == 71) %>% 
+  mutate(block_div = ifelse(block_in_tempo > 4, 2, 1)) %>% 
+  group_by(tempo, subject, block_div) %>% 
+  summarise(margin = mean(margin, na.rm = T)) %>% 
+  group_by(tempo, block_div) %>% 
+  summarise(mean = mean(margin, na.rm = T),
+            se = sd(margin, na.rm = T)/n())
+
+p2 <- ggplot()+
+  # geom_line(data = margin_summary_subj2, aes(x = block_in_tempo, y = margin, group = subject),
+  #           color = "grey", alpha = 0.4)+
+  geom_point(data = margin_summary2, aes(x = block_div, y = mean, color = tempo),
+            size = 1)+
+  geom_errorbar(data = margin_summary2, aes(x = block_div, ymin = mean-se, ymax = mean+se,
+                                          color = tempo), width = 0.1)+
+  geom_line(data = margin_summary2, aes(x = block_div, y = mean, color = tempo),
+            size = 1)+
+  scale_color_manual(values = greys_palette3)+
+  scale_fill_manual(values = greys_palette3)+
+  scale_x_continuous(breaks = c(1,2),labels = c("first half", "second"))+
+  labs(x = "Blocks by half",
+       y = "average final margin (sec)")+
+  ylim(0,0.25)+
+  theme(legend.position = "none")
+
+p1+p2+
+  plot_layout(widths = c(5,1))+ 
+  plot_annotation(tag_levels = 'A')
+ggsave('../figures/SI_fig8.png',width = 8, height = 4, units = "in",dpi = 300)
+```
+
+

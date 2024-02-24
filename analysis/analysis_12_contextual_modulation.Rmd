@@ -1,0 +1,102 @@
+---
+title: "contextual_modulation"
+author: "Ryan Yan"
+date: "2023-02-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+theme_set(theme_classic()+
+          theme(text = element_text(family = "Times", size = 12)))
+
+purpleOrange_palette3 = c("purple4","plum3","gold")
+greys_palette3 = c("bisque3","bisque4","black")
+```
+
+# read in csv files and demographic info
+
+```{r read files}
+file_timecourse <- read.csv(paste0(dataset_path,'R/data_tbt_timecourse.csv')) #tbt_meta.csv
+file_demo <- read.table(paste0(dataset_path,'participants.tsv'))%>%
+  rename(participant_ID = participant_id)
+
+file_timecourse <- left_join(file_timecourse,file_demo)
+file_timecourse$tempo <- factor(file_timecourse$tempo,levels = c("slow","medium","fast"))
+```
+```{r warning=FALSE, message = FALSE}
+file_timecourse$last_feedback_dich <- factor(file_timecourse$last_feedback_dich,levels = c(1,0))
+lmer_out_hit <- {}
+for (i in 2:40) {
+  my.formula <- as.formula(paste0("scale(erpRewp) ~ scale(recent_avg_winpercent",i, ") * tempo + last_chunk_location + (1|participant_ID)"))
+  lm_temp <- lmer(my.formula,file_timecourse%>%filter(last_feedback_dich == 1))
+  lmer_out_hit <- rbind(lmer_out_hit, summary(lm_temp)$coefficients[2,])
+}
+
+lmer_out_hit <- as.data.frame(lmer_out_hit)%>%
+  mutate(hit = 1)
+
+lmer_out_hit$coef <- names(file_timecourse)[36:(35+nrow(lmer_out_hit))]
+
+lmer_out_hit <- lmer_out_hit%>%
+  relocate(coef)%>%
+  rowwise()%>%
+  mutate(coef = strsplit(coef,"percent")[[1]][2])
+
+lmer_out_hit$p_val <- (lmer_out_hit$`Pr(>|t|)` < 0.05)
+
+lmer_out_hit$coef <- factor(lmer_out_hit$coef, levels = c(1:40))
+
+ggplot(lmer_out_hit, aes(x = coef, y = Estimate, color = p_val))+
+  geom_point(aes(shape = p_val))+
+  scale_color_manual(values = c("purple4","gold"))+
+  geom_smooth(aes(group = hit, linetype = as.factor(hit)),
+              method = "loess", color = "black", se = T, alpha = 0.2)+
+  labs(title = "RewP predicted by recent on-time rate",
+       color = "hit", shape = "p < .05")+
+  geom_hline(yintercept = 0)
+
+# file_timecourse$last_feedback_dich <- factor(file_timecourse$last_feedback_dich,levels = c(0,1))
+# lmer_out_miss <- {}
+# for (i in 2:40) {
+#   my.formula <- as.formula(paste0("scale(erpRewp) ~ scale(recent_avg_winpercent",i, ") * last_feedback_dich * tempo + last_chunk_location + (1|participant_ID)"))
+#   lm_temp <- lmer(my.formula,file_timecourse)
+#   lmer_out_miss <- rbind(lmer_out_miss, summary(lm_temp)$coefficients[2,])
+# }
+# 
+# lmer_out_miss <- as.data.frame(lmer_out_miss)%>%
+#   mutate(hit = 0)
+# 
+# lmer_out_miss$coef <- names(file_timecourse)[34:(33+nrow(lmer_out_miss))]
+# lmer_out_miss <- lmer_out_miss%>%
+#   relocate(coef)%>%
+#   rowwise()%>%
+#   mutate(coef = strsplit(coef,"percent")[[1]][2])
+# 
+# lmer_out <- rbind(lmer_out_hit,lmer_out_miss)
+# lmer_out$p_val <- (lmer_out$`Pr(>|t|)` < 0.05)
+# 
+# lmer_out$coef <- factor(lmer_out$coef, levels = c(1:40))
+# 
+# ggplot(lmer_out, aes(x = coef, y = Estimate, color = as.factor(hit)))+
+#   geom_point(aes(shape = p_val))+
+#   scale_color_manual(values = c("purple4","gold"))+
+#   geom_smooth(aes(group = hit, linetype = as.factor(hit)), 
+#               method = "loess", color = "black", se = T, alpha = 0.2)+
+#   labs(title = "RewP predicted by recent on-time rate",
+#        color = "hit", shape = "p < .05")+
+#   geom_hline(yintercept = 0)
+```
+
+```{r}
+i = 20
+my.formula <- as.formula(paste0("scale(erpRewp) ~ scale(recent_avg_winpercent",i, ") * tempo + last_chunk_location + (1|participant_ID)"))
+lm_temp <- lmer(my.formula,file_timecourse%>%
+                  filter(last_feedback_dich == 1))
+summary(lm_temp)
+
+plot_model(lm_temp, type = "pred", terms = c("recent_avg_winpercent20"),
+           show.data = F)+
+  geom_hline(yintercept = 0)+
+  labs(y = "RewP amplitude",
+       x = "recent on-time rate (past 20 trials)")
+```

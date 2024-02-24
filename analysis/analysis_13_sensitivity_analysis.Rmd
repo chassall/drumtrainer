@@ -1,0 +1,229 @@
+---
+title: "sensitivity_analysis"
+author: "Ryan Yan"
+date: "2023-02-14"
+output: html_document
+---
+
+Code for Yan, Y., Hunt, L. T., & Hassall, C. D. (2023). Reward positivity biases interval production in a continuous timing task. bioRxiv, 2023-07.
+
+Contact: Ryan Yan, Department of Psychology, Stanford University, ryany98@stanford.edu
+
+*Examines whether the results for the linear mixed model still holds with different data exclusion criteria.*
+
+```{r}
+num_practice_block <- 0
+ci <- c(0.005,0.995)
+exclude_method = "quantile"
+```
+
+# read in csv files and demographic info
+
+```{r read files}
+window_type = "meta" #"50peak"
+file_ERP <- read.csv(paste0(dataset_path,'R/rERP_meta.csv'))
+file_tbt_raw <- read.csv(paste0(dataset_path,'R/tbt_',window_type,'.csv')) #tbt_meta.csv
+```
+
+# tbt preprocessing
+
+## (1) calculate RT adjustment and local mean; (2) recode some categorical variables; (3) add in location-in-chunk
+
+```{r preprocessing,echo=FALSE}
+#calculate local mean and rt adjustment
+file_tbt_raw <- merge(file_demo,file_tbt_raw, by = "participant_ID")
+
+# add in text variables of tempo and outcome
+file_tbt_raw$tempo <- NA
+file_tbt_raw$tempo[which(file_tbt_raw$blockType <= 4)] <- "fast"
+file_tbt_raw$tempo[which(file_tbt_raw$blockType >=9)] <- "slow"
+file_tbt_raw$tempo[which(file_tbt_raw$blockType >= 5 & file_tbt_raw$blockType <= 8)] <- "medium"
+
+file_tbt_raw$feedback <- NA
+file_tbt_raw$feedback[which(file_tbt_raw$outcome == 0)] <- "early"
+file_tbt_raw$feedback[which(file_tbt_raw$outcome == 1)] <- "on_time"
+file_tbt_raw$feedback[which(file_tbt_raw$outcome == 2)] <- "late"
+
+file_tbt_raw$feedback_dich <- NA
+file_tbt_raw$feedback_dich[which(file_tbt_raw$outcome != 1)] <- 0
+file_tbt_raw$feedback_dich[which(file_tbt_raw$outcome == 1)] <- 1
+
+# add in hand and pattern
+pattern1_list <- c(1,2,5,6,9,10)
+pattern2_list <- c(3,4,7,8,11,12)
+right_list <- c(2,4,6,8,10,12)
+left_list <- c(1,3,5,7,9,11)
+
+file_tbt_raw$pattern <- NA
+file_tbt_raw$main_hand <- NA
+
+file_tbt_raw$pattern[file_tbt_raw$blockType %in% pattern1_list] <- "pattern1"
+file_tbt_raw$pattern[file_tbt_raw$blockType %in% pattern2_list] <- "pattern2"
+
+file_tbt_raw$main_hand[file_tbt_raw$blockType %in% right_list] <- "right"
+file_tbt_raw$main_hand[file_tbt_raw$blockType %in% left_list] <- "left"
+
+#add in chunking var
+file_tbt_raw$chunk_location <- NA
+file_tbt_raw <- file_tbt_raw%>%
+  rowwise()%>%
+  mutate(chunk_location = ifelse(pattern == "pattern1",(trialLoop_thisRepN)%%4, #00,01,02,03
+         ifelse(pattern == "pattern2",10+(trialLoop_thisRepN)%%6,NA)))#10,11,12,13,14,15
+
+file_tbt_raw <- file_tbt_raw%>%
+  mutate(chunk_location = ifelse(chunk_location %in% c(0,1,2,3),paste0("A",chunk_location),
+                                  ifelse(chunk_location %in% c(10,11,12,13,14,15),paste0("B",(chunk_location-10)),NA)))
+
+file_tbt_raw$chunk_location <- as.factor(file_tbt_raw$chunk_location)
+
+file_tbt_raw <- file_tbt_raw %>%
+  group_by(participant_ID,blockLoop_thisRepN)%>% 
+  mutate(target_interval = ifelse(tempo == "fast",0.4,
+                                  ifelse(tempo == "medium",0.6,
+                                         ifelse(tempo == "slow",1))),
+         last_rt = lag(trialResp_rt,1),
+         rt_adjustment = trialResp_rt - last_rt,
+         last_rt_adjustment = lag(rt_adjustment,1), #this is for lag-1 model
+         last_RewP = lag(rERPRewp,1),#this is for lag+1 model
+         last_feedback = lag(feedback,1),
+         last_feedback_dich = lag(feedback_dich,1),
+         last_last_RewP = lag(last_RewP,1),#this is for lag+2 model
+         last_last_last_RewP = lag(last_last_RewP,1),#this is for lag+2 model
+         rt_mean10 = rollmean(trialResp_rt, k = 10, fill = NA, align = "right"),
+         rt_deviance_mean10 = ifelse(!is.na(rt_mean10),trialResp_rt - rt_mean10,
+                                     trialResp_rt - target_interval),
+         last_rt_deviance_mean10 = lag(rt_deviance_mean10,1),
+         last_last_rt_deviance_mean10 = lag(last_rt_deviance_mean10,1),
+         last_chunk_location = lag(chunk_location,1))
+```
+
+## exclude practice blocks
+```{r}
+range(file_tbt_raw$trialResp_rt,na.rm = TRUE)
+range(file_tbt_raw$rt_adjustment,na.rm = TRUE)
+range(file_tbt_raw$rERPRewp[file_tbt_raw$rERPRewp != -99],na.rm = TRUE)
+range(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE)
+
+file_tbt_raw <- file_tbt_raw%>%filter(blockLoop_thisRepN >= num_practice_block, trialResp_corr == 1)
+```
+
+## excluding outliers on both end (1~99 percentile).
+```{r data cleaning, include=FALSE}
+if (exclude_method == "quantile"){
+  
+  # rt outliers (needs log transformation)
+  tbt_outlier <-exp(c(log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")], ci)),
+                  log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")], ci)),
+                  log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")], ci))))
+
+
+  #RT adjustment outliers
+  rtAdj_outlier <-quantile(file_tbt_raw$rt_adjustment, ci,na.rm = TRUE)
+
+
+  #RT deviation outliers
+  rtDev_outlier <-quantile(file_tbt_raw$last_rt_deviance_mean10, ci,na.rm = TRUE)
+
+
+  # ERP artifacts
+  file_tbt_raw$eeg_include = 0
+  rtEEG_outlier <- quantile(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)], ci,na.rm = TRUE)
+
+  } else if (exclude_method == "std"){
+    times = 4
+    # rt outlier (log transformation)
+  tbt_outlier <-exp(c(mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")]))-times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")])),
+                  mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")]))+times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")])),
+                  mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")]))-times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")])),
+                  mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")]))+times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")])),
+                  mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))-times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")])),
+                  mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))+times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))
+                  ))
+  
+  rtAdj_outlier <- c(mean(file_tbt_raw$rt_adjustment,na.rm = TRUE)-times*sd(file_tbt_raw$rt_adjustment,na.rm = TRUE),
+                  mean(file_tbt_raw$rt_adjustment,na.rm = TRUE)+times*sd(file_tbt_raw$rt_adjustment,na.rm = TRUE))
+   
+  #RT deviation outliers
+  rtDev_outlier <-   c(mean(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE)-times*sd(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE),
+                  mean(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE)+times*sd(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE))
+
+
+  # ERP artifacts
+
+  rtEEG_outlier <- c(mean(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE)-times*sd(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE),
+                  mean(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE)+times*sd(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE))
+}
+
+```
+
+## exclude the outliers as specified above
+```{r}
+print(paste0(c("rt lower boundary: ","rt upper boundary: "),tbt_outlier))
+print(paste0(c("rt adjustment lower boundary: ","rt adjustment upper boundary: "),rtAdj_outlier))
+print(paste0(c("rt deviation lower boundary: ","rt deviation upper boundary: "),rtDev_outlier))
+```
+
+### exclude for file_tbt_raw
+```{r include = FALSE}
+file_tbt_raw$rt_include = 0
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "fast" & file_tbt_raw$trialResp_rt >= tbt_outlier[1] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[2] & file_tbt_raw$trialResp_corr == 1)] <- 1
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "medium" & file_tbt_raw$trialResp_rt >= tbt_outlier[3] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[4] & file_tbt_raw$trialResp_corr == 1)] <- 1
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "slow" & file_tbt_raw$trialResp_rt >= tbt_outlier[5] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[6] & file_tbt_raw$trialResp_corr == 1)] <- 1
+
+file_tbt_raw$rtAdj_include = 0
+file_tbt_raw$rtAdj_include[which(file_tbt_raw$rt_adjustment >= rtAdj_outlier[1] &
+                                     file_tbt_raw$rt_adjustment <= rtAdj_outlier[2])] <- 1
+ file_tbt_raw$rtDev_include = 0
+file_tbt_raw$rtDev_include[which((file_tbt_raw$last_rt_deviance_mean10 >= rtDev_outlier[1] &
+                                     file_tbt_raw$last_rt_deviance_mean10 <= rtDev_outlier[2])| file_tbt_raw$trialLoop_thisRepN < 9)] <- 1
+file_tbt_raw$eeg_include = 0
+file_tbt_raw$eeg_include[which(file_tbt_raw$erpRewp != -99 & file_tbt_raw$rERPRewp !=-99 &
+                                   file_tbt_raw$rERPRewp > rtEEG_outlier[1] & file_tbt_raw$rERPRewp < rtEEG_outlier[2])] <- 1
+```
+
+```{r data exclusion}
+table(file_tbt_raw$rt_include)/sum(file_tbt_raw$rt_include)
+table(file_tbt_raw$rtAdj_include)/sum(file_tbt_raw$rtAdj_include)
+table(file_tbt_raw$rtDev_include)/sum(file_tbt_raw$rtDev_include)
+table(file_tbt_raw$eeg_include)/sum(file_tbt_raw$eeg_include)
+
+file_tbt_raw$include <- as.numeric(file_tbt_raw$rt_include == 1 & file_tbt_raw$rtAdj_include==1 & file_tbt_raw$eeg_include==1 & file_tbt_raw$rtDev_include == 1)
+
+count(file_tbt_raw%>%ungroup,include)
+
+print(paste0("Inclusion rate = ",length(which(file_tbt_raw$include == 1))/length(which(file_tbt_raw$rERPRewp != -99))))
+
+file_tbt <- file_tbt_raw%>%filter(include == 1)
+
+range(file_tbt$trialResp_rt,na.rm = TRUE)
+range(file_tbt$rt_adjustment,na.rm = TRUE)
+range(file_tbt$rERPRewp,na.rm = TRUE)
+range(file_tbt$last_rt_deviance_mean10,na.rm = TRUE)
+```
+
+# trial-by-trial EEG predicting RT adjustments
+```{r}
+file_tbt$feedback <- factor(file_tbt$feedback, levels = c("on_time","early","late"))
+file_tbt$tempo <- factor(file_tbt$tempo, levels = c("slow","medium","fast"))
+```
+
+```{r}
+lm1 <-  lmer(rt_adjustment ~ rERPRewp * tempo * feedback + chunk_location + last_rt_deviance_mean10* tempo +(1|participant_ID), data= file_tbt)
+```
+
+```{r}
+summary_lm1 <- summary(lm1)
+summary_lm1
+
+lme.dscore(lm1,file_tbt,type = "lme4")
+
+summary(lmer(rt_adjustment ~ rERPRewp * tempo * feedback + (1|participant_ID), data= file_tbt))
+```

@@ -1,0 +1,445 @@
+---
+title: "analysis_09a_tbt_preprocessing"
+author: "Ryan Yan"
+date: "2023-07-06"
+output: html_document
+---
+
+Code for Yan, Y., Hunt, L. T., & Hassall, C. D. (2023). Reward positivity biases interval production in a continuous timing task. bioRxiv, 2023-07.
+
+Contact: Ryan Yan, Department of Psychology, Stanford University, ryany98@stanford.edu
+
+# set up library and format
+```{r}
+rm(list = ls())
+```
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(emmeans)
+library(lme4)
+library(sjPlot)
+library(brms)
+library(grid)
+library(sjPlot)
+library(MuMIn)
+library(r2glmm)
+library(bayestestR)
+library(lmerTest)
+library(patchwork)
+library(car)
+library(effects)
+library(rstatix)
+library(ggcorrplot2)
+library(grid)
+library(gridExtra)
+library(extrafont)
+library(EMAtools)
+library(afex)
+library(effectsize)
+library(kableExtra)
+library(ggeffects)
+library(fdrtool)
+# if (!requireNamespace("devtools")) install.packages("devtools")
+```
+
+```{r}
+theme_set(theme_classic()+
+          theme(text = element_text(family = "Helvetica", size = 12)))
+
+purpleOrange_palette3 = c("purple4","plum3","gold") # the feedback palette (gold = on time)
+greys_palette3 = c("bisque3","bisque4","black") # the tempo palette (black = slow)
+```
+
+# set up preprocessing params
+
+```{r}
+num_practice_block <- 3 #first 3 blocks dropped as practice rounds
+
+exclude_method = "quantile"
+ci <- c(0.01,0.99) #exclude top and bottom 1%
+```
+
+# read in csv files
+
+```{r read files}
+dataset_path = "/Users/rh/Documents/ds004152/" # change this to your local address
+window_type = "meta" #"50peak"; this is the method for getting the RewP window. "meta" means it's from a previous analysis (Sambrook and Goslin 2015)
+file_ERP <- read.csv(paste0(dataset_path,paste0('R/rERP_',window_type,'.csv')))
+file_traditional_ERP <- read.csv(paste0(dataset_path,'R/traditional_ERP_',window_type,'.csv'))
+file_tbt_raw_orig <- read.csv(paste0(dataset_path,'R/tbt_',window_type,'.csv'))
+file_demo <- read.table(paste0(dataset_path,'/participants.tsv'))%>%
+  rename(participant_ID = participant_id)
+```
+
+# tbt preprocessing
+
+(1) calculate RT adjustment and local mean; 
+(2) recode some categorical variables; 
+(3) add in location-in-chunk to control for chunking effect
+
+```{r preprocessing,echo=FALSE}
+#calculate local mean and rt adjustment
+file_tbt_raw_orig <- merge(file_demo,file_tbt_raw_orig, by = "participant_ID")
+
+# add in text variables of tempo and outcome
+file_tbt_raw_orig$tempo <- NA
+file_tbt_raw_orig$tempo[which(file_tbt_raw_orig$blockType <= 4)] <- "fast"
+file_tbt_raw_orig$tempo[which(file_tbt_raw_orig$blockType >=9)] <- "slow"
+file_tbt_raw_orig$tempo[which(file_tbt_raw_orig$blockType >= 5 & file_tbt_raw_orig$blockType <= 8)] <- "medium"
+
+file_tbt_raw_orig$feedback <- NA
+file_tbt_raw_orig$feedback[which(file_tbt_raw_orig$outcome == 0)] <- "early"
+file_tbt_raw_orig$feedback[which(file_tbt_raw_orig$outcome == 1)] <- "on_time"
+file_tbt_raw_orig$feedback[which(file_tbt_raw_orig$outcome == 2)] <- "late"
+
+file_tbt_raw_orig$feedback_dich <- NA
+file_tbt_raw_orig$feedback_dich[which(file_tbt_raw_orig$outcome != 1)] <- 0
+file_tbt_raw_orig$feedback_dich[which(file_tbt_raw_orig$outcome == 1)] <- 1
+
+# add in hand and pattern
+pattern1_list <- c(1,2,5,6,9,10)
+pattern2_list <- c(3,4,7,8,11,12)
+right_list <- c(2,4,6,8,10,12)
+left_list <- c(1,3,5,7,9,11)
+
+file_tbt_raw_orig$pattern <- NA
+file_tbt_raw_orig$main_hand <- NA
+
+file_tbt_raw_orig$pattern[file_tbt_raw_orig$blockType %in% pattern1_list] <- "pattern1"
+file_tbt_raw_orig$pattern[file_tbt_raw_orig$blockType %in% pattern2_list] <- "pattern2"
+
+file_tbt_raw_orig$main_hand[file_tbt_raw_orig$blockType %in% right_list] <- "right"
+file_tbt_raw_orig$main_hand[file_tbt_raw_orig$blockType %in% left_list] <- "left"
+
+#add in chunking variable
+file_tbt_raw_orig$chunk_location <- NA
+file_tbt_raw_orig <- file_tbt_raw_orig%>%
+  rowwise()%>%
+  mutate(chunk_location = ifelse(pattern == "pattern1",(trialLoop_thisRepN)%%4, #00,01,02,03
+         ifelse(pattern == "pattern2",10+(trialLoop_thisRepN)%%6,NA)))#10,11,12,13,14,15
+
+file_tbt_raw_orig <- file_tbt_raw_orig%>%
+  mutate(chunk_location = ifelse(chunk_location %in% c(0,1,2,3),paste0("A",chunk_location),
+                                  ifelse(chunk_location %in% c(10,11,12,13,14,15),paste0("B",(chunk_location-10)),NA)))
+
+file_tbt_raw_orig$chunk_location <- as.factor(file_tbt_raw_orig$chunk_location)
+  
+file_tbt_raw_orig <- file_tbt_raw_orig %>%
+  group_by(participant_ID,blockLoop_thisRepN)%>% 
+  mutate(target_interval = ifelse(tempo == "fast",0.4,
+                                  ifelse(tempo == "medium",0.6,
+                                         ifelse(tempo == "slow",1))),
+         last_rt = lag(trialResp_rt,1),
+         rt_adjustment = trialResp_rt - last_rt,
+         last_rt_adjustment = lag(rt_adjustment,1), #this is for lag-1 model
+         last_RewP = lag(rERPRewp,1),#this is for lag+1 model
+         last_feedback = lag(feedback,1),
+         last_feedback_dich = lag(feedback_dich,1),
+         last_last_RewP = lag(last_RewP,1),#this is for lag+2 model
+         last_last_last_RewP = lag(last_last_RewP,1),#this is for lag+2 model
+         rt_mean10 = rollmean(trialResp_rt, k = 10, fill = NA, align = "right"),
+         rt_deviance_mean10 = ifelse(!is.na(rt_mean10),trialResp_rt - rt_mean10,
+                                     trialResp_rt - target_interval),
+         last_rt_deviance_mean10 = lag(rt_deviance_mean10,1),
+         last_last_rt_deviance_mean10 = lag(last_rt_deviance_mean10,1),
+         last_chunk_location = lag(chunk_location,1))
+```
+
+# generate a vector differentiating below or above mean RT adjustment, for analysis_07_mediansplit.m
+```{r echo = FALSE}
+rt_adjust_mean_summary <- file_tbt_raw_orig%>%
+  group_by(tempo,feedback,participant_ID)%>%
+  summarise(mean_rt_adjust = mean(rt_adjustment,na.rm = TRUE),
+            mean_rt = mean(trialResp_rt, na.rm = TRUE))
+
+file_tbt_lab <- left_join(file_tbt_raw_orig,rt_adjust_mean_summary,by = c("tempo","feedback","participant_ID"))%>%
+  mutate(rt_adjust_cat = as.numeric(rt_adjustment >= mean_rt_adjust),
+         rt_cat = as.numeric(trialResp_rt >= mean_rt))
+
+write.csv(file_tbt_lab%>%
+  select(participant_ID,blockLoop_thisRepN,trialLoop_thisRepN,rt_adjust_cat,rt_cat),
+  'data_files/rt_vector.csv')
+```
+
+## exclude practice blocks
+```{r}
+range(file_tbt_raw_orig$trialResp_rt,na.rm = TRUE)
+range(file_tbt_raw_orig$rt_adjustment,na.rm = TRUE)
+range(file_tbt_raw_orig$rERPRewp[file_tbt_raw_orig$rERPRewp != -99],na.rm = TRUE)
+range(file_tbt_raw_orig$last_rt_deviance_mean10,na.rm = TRUE)
+
+file_tbt_raw <- file_tbt_raw_orig%>%filter(blockLoop_thisRepN >= num_practice_block, trialResp_corr == 1)
+```
+
+## create variable that count the recent on-time rate (for analysis_12_contextual_modulation.rmd)
+```{r include = F}
+file_timecourse <- file_tbt_raw%>%
+  group_by(participant_ID,blockLoop_thisRepN)%>%
+  mutate(recent_avg_winpercent1 = lag(rollmean(feedback_dich, 1, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent2 = lag(rollmean(feedback_dich, 2, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent3 = lag(rollmean(feedback_dich, 3, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent4 = lag(rollmean(feedback_dich, 4, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent5 = lag(rollmean(feedback_dich, 5, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent6 = lag(rollmean(feedback_dich, 6, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent7 = lag(rollmean(feedback_dich, 7, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent8 = lag(rollmean(feedback_dich, 8, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent9 = lag(rollmean(feedback_dich, 9, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent10 = lag(rollmean(feedback_dich, 10, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent11 = lag(rollmean(feedback_dich, 11, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent12 = lag(rollmean(feedback_dich, 12, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent13 = lag(rollmean(feedback_dich, 13, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent14 = lag(rollmean(feedback_dich, 14, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent15 = lag(rollmean(feedback_dich, 15, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent16 = lag(rollmean(feedback_dich, 16, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent17 = lag(rollmean(feedback_dich, 17, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent18 = lag(rollmean(feedback_dich, 18, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent19 = lag(rollmean(feedback_dich, 19, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent20 = lag(rollmean(feedback_dich, 20, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent21 = lag(rollmean(feedback_dich, 21, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent22 = lag(rollmean(feedback_dich, 22, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent23 = lag(rollmean(feedback_dich, 23, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent24 = lag(rollmean(feedback_dich, 24, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent25 = lag(rollmean(feedback_dich, 25, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent26 = lag(rollmean(feedback_dich, 26, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent27 = lag(rollmean(feedback_dich, 27, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent28 = lag(rollmean(feedback_dich, 28, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent29 = lag(rollmean(feedback_dich, 29, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent30 = lag(rollmean(feedback_dich, 30, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent31 = lag(rollmean(feedback_dich, 31, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent32 = lag(rollmean(feedback_dich, 32, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent33 = lag(rollmean(feedback_dich, 33, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent34 = lag(rollmean(feedback_dich, 34, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent35 = lag(rollmean(feedback_dich, 35, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent36 = lag(rollmean(feedback_dich, 36, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent37 = lag(rollmean(feedback_dich, 37, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent38 = lag(rollmean(feedback_dich, 38, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent39 = lag(rollmean(feedback_dich, 39, na.pad = TRUE, align = "right"),1),
+         recent_avg_winpercent40 = lag(rollmean(feedback_dich, 40, na.pad = TRUE, align = "right"),1))
+
+ggplot(file_timecourse%>%filter(participant_ID == 1, blockLoop_thisRepN == 4), aes(x = trialLoop_thisRepN))+
+  stat_summary(aes(y = recent_avg_winpercent1), color = "grey", geom = "line",size=2)+
+  stat_summary(aes(y = recent_avg_winpercent30), color = "gold", geom = "line",size=2)+
+  stat_summary(aes(y = recent_avg_winpercent17), color = "orange", geom = "line",size=2)+
+  stat_summary(aes(y = recent_avg_winpercent10), color = "red", geom = "line",size=2)+
+  stat_summary(aes(y = recent_avg_winpercent5), color = "red3", geom = "line",size=2)+
+  stat_summary(aes(y = recent_avg_winpercent3), color = "brown4", geom = "line",size=2)
+```
+
+## skimming through the distribution of raw data
+```{r}
+ggdensity(file_tbt_raw%>%mutate(trialResp_rt = log(trialResp_rt)), x = "trialResp_rt", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  geom_vline(xintercept  = log(0.4))+
+  geom_vline(xintercept  = log(0.6))+
+  geom_vline(xintercept  = log(1.0))+
+  labs(x = 'Response Time',
+       y = 'Density (raw data)')
+
+ggdensity(file_tbt_raw%>%mutate(trialResp_rt = (trialResp_rt)), x = "trialResp_rt", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  geom_vline(xintercept  = (0.4))+
+  geom_vline(xintercept  = (0.6))+
+  geom_vline(xintercept  = (1.0))+
+  labs(x = 'Response Time',
+       y = 'Density (raw data)')
+
+ggdensity(file_tbt_raw, x = "rt_adjustment", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  labs(y = 'Density (raw data)')
+
+ggdensity(file_tbt_raw, x = "last_rt_deviance_mean10", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  labs(y = 'Density (raw data)')
+
+ggdensity(file_tbt_raw%>%filter(rERPRewp!=-99), x = "rERPRewp", rug = TRUE,add = 'median',
+   color = "tempo", fill = "tempo")+
+  scale_color_brewer(palette="Set2")+
+  scale_fill_brewer(palette="Set2")+
+  labs(y = 'Density (raw data)')
+```
+
+## excluding 1% outliers on both end (this step flags the outliers in the raw file)
+*RT is excluded based on log-transformed values because it is positively skewed.* RT, RT adjustment and RT deviations need to be excluded independently because the latter two are the derivatives of RT and its value depends on the difference between the current and previous RTs.
+
+```{r data cleaning, include=FALSE}
+if (exclude_method == "quantile"){
+  # rt outliers (needs log transformation because RTs are positively skewed)
+  tbt_outlier <-exp(
+    c(log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")], ci)),
+      log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")], ci)),
+      log(quantile(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")], ci)))
+    )
+
+  #RT adjustment outliers
+  rtAdj_outlier <-quantile(file_tbt_raw$rt_adjustment, ci,na.rm = TRUE)
+
+  #RT deviation outliers
+  rtDev_outlier <-quantile(file_tbt_raw$last_rt_deviance_mean10, ci,na.rm = TRUE)
+
+  # ERP artifacts
+  file_tbt_raw$eeg_include = 0
+  rtEEG_outlier <- quantile(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)], ci,na.rm = TRUE)
+
+  } else if (exclude_method == "std"){ #another exclusion methods
+    times = 4
+    # rt outlier (log transformation)
+  tbt_outlier <-exp(
+    c(mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")]))
+      -times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")])),
+      mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")]))
+      +times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "fast")])),
+      mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")]))
+      -times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")])),
+      mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")]))
+      +times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "medium")])),
+      mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))
+      -times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")])),
+      mean(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))
+      +times*sd(log(file_tbt_raw$trialResp_rt[which(file_tbt_raw$tempo == "slow")]))
+      )
+    )
+  
+  rtAdj_outlier <- c(mean(file_tbt_raw$rt_adjustment,na.rm = TRUE)
+                     -times*sd(file_tbt_raw$rt_adjustment,na.rm = TRUE),
+                  mean(file_tbt_raw$rt_adjustment,na.rm = TRUE)
+                  +times*sd(file_tbt_raw$rt_adjustment,na.rm = TRUE))
+   
+  #RT deviation outliers
+  rtDev_outlier <- c(mean(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE)
+                     -times*sd(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE),
+                  mean(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE)
+                  +times*sd(file_tbt_raw$last_rt_deviance_mean10,na.rm = TRUE))
+
+  # ERP artifacts
+
+  rtEEG_outlier <- c(mean(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE)
+                     -times*sd(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE),
+                  mean(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE)
+                  +times*sd(file_tbt_raw$rERPRewp[which(file_tbt_raw$erpRewp != -99,
+                                                        file_tbt_raw$rERPRewp!=-99)],na.rm = TRUE)
+                  )
+}
+```
+
+## exclude the outliers as specified above and print the exclusion rate
+
+```{r}
+print(paste0(c("rt lower boundary: ","rt upper boundary: "),tbt_outlier))
+print(paste0(c("rt adjustment lower boundary: ","rt adjustment upper boundary: "),rtAdj_outlier))
+print(paste0(c("rt deviation lower boundary: ","rt deviation upper boundary: "),rtDev_outlier))
+```
+
+## do the actual exclusion based on all the flags
+```{r include = FALSE}
+file_tbt_raw$rt_include = 0
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "fast" & 
+                                file_tbt_raw$trialResp_rt >= tbt_outlier[1] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[2] & 
+                                file_tbt_raw$trialResp_corr == 1)] <- 1
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "medium" & 
+                                file_tbt_raw$trialResp_rt >= tbt_outlier[3] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[4] & 
+                                file_tbt_raw$trialResp_corr == 1)] <- 1
+file_tbt_raw$rt_include[which(file_tbt_raw$tempo == "slow" & 
+                                file_tbt_raw$trialResp_rt >= tbt_outlier[5] &
+                                file_tbt_raw$trialResp_rt <= tbt_outlier[6] & 
+                                file_tbt_raw$trialResp_corr == 1)] <- 1
+
+file_tbt_raw$rtAdj_include = 0
+file_tbt_raw$rtAdj_include[which(file_tbt_raw$rt_adjustment >= rtAdj_outlier[1] &
+                                     file_tbt_raw$rt_adjustment <= rtAdj_outlier[2])] <- 1
+
+file_tbt_raw$rtDev_include = 0
+file_tbt_raw$rtDev_include[which((file_tbt_raw$last_rt_deviance_mean10 >= rtDev_outlier[1] &
+                                     file_tbt_raw$last_rt_deviance_mean10 <= rtDev_outlier[2]|file_tbt_raw$trialLoop_thisRepN < 9))] <- 1
+
+file_tbt_raw$eeg_include = 0
+file_tbt_raw$eeg_include[which(file_tbt_raw$erpRewp != -99 &
+                                 file_tbt_raw$rERPRewp !=-99 &
+                                   file_tbt_raw$rERPRewp > rtEEG_outlier[1] & 
+                                 file_tbt_raw$rERPRewp < rtEEG_outlier[2])] <- 1
+```
+
+```{r}
+file_tbt_raw$include <- as.numeric(file_tbt_raw$rt_include == 1 & 
+                                     file_tbt_raw$rtAdj_include==1 & 
+                                     file_tbt_raw$eeg_include==1 & 
+                                     file_tbt_raw$rtDev_include == 1)
+
+count(file_tbt_raw%>%ungroup,include)
+
+print(paste0("Inclusion rate = ",length(which(file_tbt_raw$include == 1))/length(which(file_tbt_raw_orig$rERPRewp != -99))))
+
+print(paste0("Inclusion rate = ",length(which(file_tbt_raw$include == 1))/length(which(file_tbt_raw$rERPRewp != -99))))
+
+file_tbt <- file_tbt_raw%>%filter(include == 1)
+
+range(file_tbt$trialResp_rt,na.rm = TRUE)
+range(file_tbt$rt_adjustment,na.rm = TRUE)
+range(file_tbt$rERPRewp,na.rm = TRUE)
+range(file_tbt$last_rt_deviance_mean10,na.rm = TRUE)
+
+write.csv(file_tbt, "data_files/data_tbt.csv")
+```
+
+
+### exclude for file_timecourse.csv for analysing the timecourse effect
+```{r include = FALSE}
+file_timecourse$rt_include = 0
+file_timecourse$rt_include[which(file_timecourse$tempo == "fast" & file_timecourse$trialResp_rt >= tbt_outlier[1] 
+                                 & file_timecourse$trialResp_rt <= tbt_outlier[2] 
+                                 & file_timecourse$trialResp_corr == 1)] <- 1
+file_timecourse$rt_include[which(file_timecourse$tempo == "medium" 
+                                 & file_timecourse$trialResp_rt >= tbt_outlier[3] 
+                                 & file_timecourse$trialResp_rt <= tbt_outlier[4] 
+                                 & file_timecourse$trialResp_corr == 1)] <- 1
+file_timecourse$rt_include[which(file_timecourse$tempo == "slow" 
+                                 & file_timecourse$trialResp_rt >= tbt_outlier[5] 
+                                 & file_timecourse$trialResp_rt <= tbt_outlier[6] 
+                                 & file_timecourse$trialResp_corr == 1)] <- 1
+
+file_timecourse$rtAdj_include = 0
+file_timecourse$rtAdj_include[which(file_timecourse$rt_adjustment >= rtAdj_outlier[1] 
+                                    & file_timecourse$rt_adjustment <= rtAdj_outlier[2])] <- 1
+file_timecourse$rtDev_include[which((file_timecourse$last_rt_deviance_mean10 >= rtDev_outlier[1] 
+                                     & file_timecourse$last_rt_deviance_mean10 <= rtDev_outlier[2]|file_tbt_raw$trialLoop_thisRepN < 9))] <- 1
+
+file_timecourse$eeg_include = 0
+file_timecourse$eeg_include[which(file_timecourse$erpRewp != -99 
+                                  & file_timecourse$rERPRewp !=-99 
+                                  & file_timecourse$rERPRewp > rtEEG_outlier[1] 
+                                  & file_timecourse$rERPRewp < rtEEG_outlier[2])] <- 1
+```
+
+```{r}
+file_timecourse$include <- as.numeric(file_timecourse$rt_include == 1 & file_timecourse$rtAdj_include==1 & file_timecourse$eeg_include==1 & file_timecourse$rtDev_include == 1)
+
+count(file_timecourse%>%ungroup,include)
+
+print(paste0("Inclusion rate = ",length(which(file_timecourse$include == 1))/length(which(file_timecourse$rERPRewp != -99))))
+
+file_timecourse_out <- file_timecourse%>%filter(include == 1)
+
+range(file_timecourse_out$trialResp_rt,na.rm = TRUE)
+range(file_timecourse_out$rt_adjustment,na.rm = TRUE)
+range(file_timecourse_out$rERPRewp,na.rm = TRUE)
+range(file_timecourse_out$last_rt_deviance_mean10,na.rm = TRUE)
+
+write.csv(file_timecourse_out, "data_files/data_tbt_timecourse.csv")
+```
